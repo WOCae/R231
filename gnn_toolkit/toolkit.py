@@ -204,18 +204,30 @@ class GNNToolkit:
         stress_mpa = pred[:, 3] * self.config.norm_stress
 
         mesh.point_data["gnn_disp"] = disp_mm
+        mesh.point_data["gnn_disp_x"] = disp_mm[:, 0]
+        mesh.point_data["gnn_disp_y"] = disp_mm[:, 1]
+        mesh.point_data["gnn_disp_z"] = disp_mm[:, 2]
         mesh.point_data["gnn_stress"] = stress_mpa
         mesh.save(output_vtu)
 
+        max_dx = float(np.max(np.abs(disp_mm[:, 0])))
+        max_dy = float(np.max(np.abs(disp_mm[:, 1])))
+        max_dz = float(np.max(np.abs(disp_mm[:, 2])))
         res = {
             "max_disp": float(np.max(np.abs(disp_mm))),
+            "max_disp_x": max_dx,
+            "max_disp_y": max_dy,
+            "max_disp_z": max_dz,
             "max_stress": float(np.max(stress_mpa)),
             "output": output_vtu,
         }
         print(f"\n--- [{load_N}N 推論結果] ---")
-        print(f"  最大変位 : {res['max_disp']:.5f} mm")
-        print(f"  最大応力 : {res['max_stress']:.5f} MPa")
-        print(f"  保存先   : {output_vtu}")
+        print(f"  最大変位   : {res['max_disp']:.5f} mm")
+        print(f"    X        : {max_dx:.5f} mm")
+        print(f"    Y        : {max_dy:.5f} mm")
+        print(f"    Z        : {max_dz:.5f} mm")
+        print(f"  最大応力   : {res['max_stress']:.5f} MPa")
+        print(f"  保存先     : {output_vtu}")
         return res
 
     # ==================================================================
@@ -246,6 +258,7 @@ class GNNToolkit:
         sp = pred[:, 3] * self.config.norm_stress
         st = true[:, 3] * self.config.norm_stress
 
+        # 全体指標
         d_mae = float(np.mean(np.abs(dp - dt)))
         d_max = float(np.max(np.abs(dp - dt)))
         s_mae = float(np.mean(np.abs(sp - st)))
@@ -253,7 +266,26 @@ class GNNToolkit:
         d_rel = d_max / max(np.max(np.abs(dt)), 1e-12) * 100
         s_rel = s_max / max(np.max(np.abs(st)), 1e-12) * 100
 
+        # 各方向指標
+        axis_labels = ["X", "Y", "Z"]
+        axis_results = {}
+        for i, ax in enumerate(axis_labels):
+            ax_mae = float(np.mean(np.abs(dp[:, i] - dt[:, i])))
+            ax_max = float(np.max(np.abs(dp[:, i] - dt[:, i])))
+            ax_ref = max(float(np.max(np.abs(dt[:, i]))), 1e-12)
+            ax_rel = ax_max / ax_ref * 100
+            axis_results[f"d_mae_{ax.lower()}"] = ax_mae
+            axis_results[f"d_max_{ax.lower()}"] = ax_max
+            axis_results[f"d_rel_{ax.lower()}"] = ax_rel
+
         print(f"\n--- [精度評価 {load_N}N] ---")
+        for ax in axis_labels:
+            k = ax.lower()
+            print(
+                f"  変位{ax} MAE = {axis_results[f'd_mae_{k}']:.6f} mm  |  "
+                f"最大誤差 = {axis_results[f'd_max_{k}']:.6f} mm  "
+                f"({axis_results[f'd_rel_{k}']:.2f}%)"
+            )
         print(
             f"  変位  MAE = {d_mae:.6f} mm  |  "
             f"最大誤差 = {d_max:.6f} mm  ({d_rel:.2f}%)"
@@ -265,6 +297,7 @@ class GNNToolkit:
         return {
             "d_mae": d_mae, "d_max": d_max, "d_rel": float(d_rel),
             "s_mae": s_mae, "s_max": s_max, "s_rel": float(s_rel),
+            **axis_results,
         }
 
     # ==================================================================
