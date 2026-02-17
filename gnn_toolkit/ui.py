@@ -281,12 +281,13 @@ class GNNToolkitUI:
             self.btn_analyze,
         ])
 
-        # ─── タブ組み立て ─────────────────────────────
-        self.tabs = widgets.Tab(
+        # ─── アコーディオン組み立て（Colab 互換）────────
+        self.tabs = widgets.Accordion(
             children=[train_tab, predict_tab, eval_tab, save_tab, analyze_tab]
         )
-        for i, label in enumerate(["学習", "推論", "評価", "保存/読込", "VTU解析"]):
+        for i, label in enumerate(["▶ 学習", "⚡ 推論", "📊 評価", "💾 保存/読込", "🔍 VTU解析"]):
             self.tabs.set_title(i, label)
+        self.tabs.selected_index = 0
 
         # ─── ステータスバー ───────────────────────────
         self.w_status = widgets.HTML(
