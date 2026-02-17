@@ -1,4 +1,4 @@
-"""汎用構造解析 GNN ツールキット"""
+"""汎用構造解析 GNN ツールキット — メッシュ形状変更対応版"""
 
 from .config import GNNConfig
 from .data import FEADataProcessor
@@ -14,4 +14,4 @@ __all__ = [
     "GNNToolkitUI",
 ]
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"

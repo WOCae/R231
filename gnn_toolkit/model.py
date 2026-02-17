@@ -2,6 +2,7 @@
 StructuralGNN — 汎用構造解析グラフニューラルネットワーク
 
 Encoder → Processor (残差 SAGEConv × N 層) → Decoder (変位 / 応力ヘッド)
+v3: 入力次元を config.n_features で可変化（12次元ジオメトリ / 5次元レガシー）
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ class StructuralGNN(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
         h = config.hidden_dim
+        self._include_geometry = config.include_geometry
 
         # Encoder
         self.encoder = nn.Sequential(
@@ -67,7 +69,14 @@ class StructuralGNN(nn.Module):
 
     def forward(self, data: Data) -> torch.Tensor:
         x, ei = data.x, data.edge_index
-        ratio = torch.max(data.x[:, 4])
+
+        # 荷重比率の取得
+        if self._include_geometry:
+            # ジオメトリモード: x[:,11] = load_ratio
+            ratio = torch.max(data.x[:, 11])
+        else:
+            # レガシーモード: x[:,4] = load_feat
+            ratio = torch.max(data.x[:, 4])
 
         h = self.encoder(x)
         for blk in self.blocks:

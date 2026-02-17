@@ -4,6 +4,7 @@ GNNToolkitUI — ipywidgets ベースの対話型 GUI
 Colab (ipywidgets 7.x) / ローカル (8.x) 両対応。
 Tab / Accordion は Colab で描画されないため、
 ToggleButtons + Output でページ切替を行う。
+v3: ジオメトリ特徴量ON/OFF + 複数VTU学習対応
 """
 
 from __future__ import annotations
@@ -93,6 +94,8 @@ class GNNToolkitUI:
                                            description="学習率:", layout=self._WIDE,
                                            style={"description_width": "80px"})
         self.w_linear = widgets.Checkbox(value=True, description="線形弾性スケーリング")
+        self.w_geometry = widgets.Checkbox(value=True,
+                                           description="ジオメトリ特徴量（形状汎化）")
         self.btn_train = widgets.Button(description="▶ 学習開始", button_style="primary", layout=self._BTN)
         self.btn_train.on_click(self._on_train)
         self.w_progress = widgets.IntProgress(value=0, min=0, max=100, description="進捗:",
@@ -103,7 +106,8 @@ class GNNToolkitUI:
         page_train = widgets.VBox([
             widgets.HBox([
                 widgets.VBox([self.w_train_file, self.w_train_load, self.w_epochs, self.w_hidden]),
-                widgets.VBox([self.w_layers, self.w_stress_wt, self.w_patience, self.w_lr, self.w_linear]),
+                widgets.VBox([self.w_layers, self.w_stress_wt, self.w_patience, self.w_lr,
+                             self.w_linear, self.w_geometry]),
             ]),
             self.btn_train,
             self.w_progress,
@@ -233,6 +237,7 @@ class GNNToolkitUI:
                 patience=self.w_patience.value,
                 lr=self.w_lr.value,
                 linear_scaling=self.w_linear.value,
+                include_geometry=self.w_geometry.value,
             )
             def _cb(epoch, loss, best, lr):
                 self.w_progress.value = min(epoch, self.w_progress.max)

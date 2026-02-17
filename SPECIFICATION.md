@@ -2,7 +2,7 @@
 
 | 項目       | 内容                           |
 |-----------|-------------------------------|
-| バージョン | 2.0.0                         |
+| バージョン | 3.0.0                         |
 | 作成日     | 2026-02-17                    |
 | 言語       | Python 3.10+                  |
 | フレームワーク | PyTorch / PyTorch Geometric |
@@ -11,9 +11,16 @@
 
 ## 1. 概要
 
-本ツールキットは、有限要素解析（FEA）の結果ファイル（VTU形式）からグラフニューラルネットワーク（GNN）を自動構築・学習し、**任意の荷重条件での応力・変位を高速に推論**するソフトウェアである。
+本ツールキットは、有限要素解析（FEA）の結果ファイル（VTU形式）からグラフニューラルネットワーク（GNN）を自動構築・学習し、**任意の荷重条件**および**異なるメッシュ形状**での応力・変位を高速に推論するソフトウェアである。
 
 GUI（ipywidgets）と Python API の2つのインターフェースを提供し、Jupyter Notebook 上での直観的な操作と、スクリプトからの自動化の両方に対応する。
+
+### v3 新機能: メッシュ形状変更対応
+
+| 推論パターン | 説明 | 必要データ |
+|-------------|------|----------|
+| **荷重スケーリング** | 同メッシュ・異荷重 | 1ファイル以上 |
+| **形状汎化** | 異メッシュ・任意荷重 | 複数形状ファイル推奨 |
 
 ---
 
@@ -29,7 +36,8 @@ R231/
 │   ├── model.py            # StructuralGNN — GNNモデル定義
 │   ├── toolkit.py          # GNNToolkit — ファサード（学習・推論・評価・保存）
 │   └── ui.py               # GNNToolkitUI — ipywidgets GUI
-├── SPECIFICATION.md        # 本仕様書
+├── data/                   # 学習用 VTU ファイル
+├── results/                # 推論結果 VTU ファイル
 ├── *.vtu                   # FEA解析結果ファイル
 └── saved_model/            # 学習済みモデル保存先
     ├── model.pth
@@ -56,8 +64,9 @@ R231/
 | `train_load` | float | 1000.0 | 基準荷重 [N] |
 | `hidden_dim` | int | 128 | 隠れ層の次元数 |
 | `n_layers` | int | 4 | GNN 層数 |
-| `n_features` | int | 5 | 入力特徴量数 (x,y,z,is_fixed,load) |
+| `n_features` | int | 12 | 入力特徴量数（12:ジオメトリ / 5:レガシー） |
 | `n_outputs` | int | 4 | 出力次元数 (ux,uy,uz,stress) |
+| `include_geometry` | bool | True | ジオメトリ特徴量の使用（形状汎化モード） |
 | `epochs` | int | 5000 | 最大学習エポック数 |
 | `lr` | float | 0.001 | 初期学習率 |
 | `lr_min` | float | 1e-5 | Cosine Annealing 最小学習率 |
@@ -73,6 +82,8 @@ R231/
 | メソッド | 引数 | 戻り値 | 説明 |
 |---|---|---|---|
 | `auto_calibrate` | `mesh`, `load_N?` | None | メッシュから正規化定数を自動計算 |
+| `auto_calibrate_multi` | `meshes`, `load_values` | None | 複数メッシュから正規化定数を自動計算 |
+| `update_n_features` | — | None | include_geometry に応じて n_features を設定 |
 | `save` | `path: str` | None | JSON に設定を保存 |
 | `load` | `path: str` | GNNConfig | JSON から設定を復元（クラスメソッド） |
 | `summary` | — | str | 設定の要約文字列 |
@@ -101,6 +112,7 @@ VTU ファイルの読込・解析・境界条件検出・PyG グラフ変換を
 | `analyze` | `path: str` | UnstructuredGrid | VTU の構造を解析・表示 |
 | `detect_bc` | `mesh`, `disp_data?` | `(is_fixed, is_load)` | 境界条件の自動検出 |
 | `to_graph` | `vtu_path`, `load_N`, `config` | `Data` | VTU → PyG Data 変換 |
+| `compute_geometry_features` | `pos`, `edge_index` | ndarray(N,9) | ジオメトリ特徴量計算 |
 | `list_vtu_files` | `directory?` | list[str] | ディレクトリ内の VTU 一覧 |
 
 #### 境界条件検出アルゴリズム
@@ -114,13 +126,31 @@ ELSE:
     荷重ノード = 最長軸の max 端
 ```
 
-#### ノード特徴量（5次元）
+#### ノード特徴量（ジオメトリモード: 12次元, `include_geometry=True`）
+
+| Index | 内容 | 正規化 |
+|---|---|---|
+| 0–2 | 座標 (x, y, z) | bbox → [0, 1] |
+| 3 | 接続次数 | ÷ 最大次数 |
+| 4 | 平均エッジ長 | ÷ 最大平均エッジ長 |
+| 5 | エッジ長標準偏差 | ÷ 最大標準偏差 |
+| 6–8 | 擬似法線（隣接ベクトル平均方向） | 単位ベクトル |
+| 9 | 拘束フラグ | 0 or 1 |
+| 10 | 荷重面フラグ | 0 or 1 |
+| 11 | 荷重比率 | is_load × (load_N / train_load) |
+
+ジオメトリ特徴量により、未知のメッシュ形状でも局所的な接続パターン・形状情報を
+エンコードし、推論が可能となる。
+
+#### ノード特徴量（レガシーモード: 5次元, `include_geometry=False`）
 
 | Index | 内容 | 正規化 |
 |---|---|---|
 | 0–2 | 座標 (x, y, z) | ÷ norm_coord |
 | 3 | 拘束フラグ | 0 or 1 |
 | 4 | 荷重特徴量 | is_load × (load_N / train_load) |
+
+レガシーモードは v2 以前との後方互換。同メッシュ・荷重スケーリングのみ対応。
 
 ---
 
@@ -131,7 +161,7 @@ ELSE:
 #### アーキテクチャ図
 
 ```
-入力 (5次元)
+入力 (12次元 [ジオメトリ] / 5次元 [レガシー])
   ↓
 [Encoder] Linear → ReLU → Linear     → 潜在空間 (hidden_dim)
   ↓
@@ -282,6 +312,7 @@ ui.show()
 ```python
 from gnn_toolkit import GNNToolkit
 
+# include_geometry=True（デフォルト）で形状汎化モード
 tk = GNNToolkit(train_load=1000.0)
 tk.train("result_1000N.vtu")
 tk.evaluate("result_1000N.vtu")
@@ -303,7 +334,7 @@ tk = GNNToolkit(
 )
 ```
 
-### 4.4 複数ファイル学習
+### 4.4 複数ファイル学習（同メッシュ・異荷重）
 
 ```python
 tk = GNNToolkit(train_load=1000.0)
@@ -313,7 +344,19 @@ tk.train(
 )
 ```
 
-### 4.5 保存済みモデルの再利用
+### 4.5 形状汎化学習（複数メッシュ）
+
+```python
+tk = GNNToolkit(include_geometry=True)  # ジオメトリ特徴量 ON
+tk.train(
+    ["mesh_A.vtu", "mesh_B.vtu"],
+    load_values=[1000, 500]
+)
+# 未知メッシュへの推論
+tk.predict("mesh_C.vtu", load_N=750.0)
+```
+
+### 4.6 保存済みモデルの再利用
 
 ```python
 tk = GNNToolkit()
@@ -379,5 +422,6 @@ $$
 
 1. **線形弾性**を前提とする（`linear_scaling=True`）。非線形材料・大変形には `linear_scaling=False` に変更し、複数荷重のVTUを用意する必要がある。
 2. VTU に**変位**と**応力**のデータが含まれている必要がある。
-3. 入力メッシュのトポロジー（ノード数・接続）が推論時と学習時で同一であること。
-4. GPU 利用時は CUDA 対応の PyTorch がインストールされていること。
+3. `include_geometry=False`（レガシーモード）では入力メッシュのトポロジー（ノード数・接続）が推論時と学習時で同一であること。ジオメトリモード (`True`) では異なるメッシュでも推論可能。
+4. 形状汎化精度は、学習データに含まれる形状バリエーションに依存する。類似カテゴリの形状で学習するほど精度が向上する。
+5. GPU 利用時は CUDA 対応の PyTorch がインストールされていること。

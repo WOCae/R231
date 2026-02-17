@@ -7,6 +7,11 @@ GNNToolkit — 学習・推論・保存・評価を統合するファサード�
     tk.predict("result_1000N.vtu", load_N=500.0)
     tk.save("saved_model")
     tk.load("saved_model")
+
+    # 複数メッシュ学習（形状汎化）
+    tk = GNNToolkit(train_load=1000.0, include_geometry=True)
+    tk.train(["mesh_A.vtu", "mesh_B.vtu"], load_values=[1000, 500])
+    tk.predict("mesh_C.vtu", load_N=750.0)  # 未知形状にも推論可能
 """
 
 from __future__ import annotations
@@ -33,10 +38,12 @@ class GNNToolkit:
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.results_dir, exist_ok=True)
         self.config = GNNConfig(**kwargs)
+        self.config.update_n_features()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: Optional[StructuralGNN] = None
         self._loss_history: List[float] = []
-        print(f"[GNNToolkit] device = {self.device}")
+        mode = "ジオメトリ" if self.config.include_geometry else "レガシー"
+        print(f"[GNNToolkit] device={self.device}, mode={mode}")
         print(f"  data_dir    = {os.path.abspath(self.data_dir)}")
         print(f"  results_dir = {os.path.abspath(self.results_dir)}")
 
@@ -56,7 +63,7 @@ class GNNToolkit:
         Parameters
         ----------
         vtu_files : str | list[str]
-            学習用 VTU ファイル（パス）
+            学習用 VTU ファイル（パス）。複数指定で形状汎化学習。
         load_values : float | list[float], optional
             各ファイルの荷重値 [N]（省略時は config.train_load）
         callback : callable, optional
@@ -69,19 +76,24 @@ class GNNToolkit:
         """
         if isinstance(vtu_files, str):
             vtu_files = [vtu_files]
-        # data_dir からの相対パスを補完
         vtu_files = [self._resolve_data(f) for f in vtu_files]
         if load_values is None:
             load_values = [self.config.train_load] * len(vtu_files)
         elif isinstance(load_values, (int, float)):
             load_values = [float(load_values)] * len(vtu_files)
+        if len(load_values) == 1 and len(vtu_files) > 1:
+            load_values = load_values * len(vtu_files)
 
         # Step 1 — キャリブレーション
         print("=" * 60)
         print("[Step 1] データ解析 & 自動キャリブレーション")
         print("=" * 60)
-        mesh = FEADataProcessor.analyze(vtu_files[0])
-        self.config.auto_calibrate(mesh, load_values[0])
+        meshes = [FEADataProcessor.analyze(f) for f in vtu_files]
+        if len(meshes) == 1:
+            self.config.auto_calibrate(meshes[0], load_values[0])
+        else:
+            self.config.auto_calibrate_multi(meshes, load_values)
+        self.config.update_n_features()
         print(self.config.summary())
 
         # Step 2 — モデル構築
@@ -89,7 +101,8 @@ class GNNToolkit:
         n_params = sum(p.numel() for p in self.model.parameters())
         print(
             f"\n[Step 2] モデル構築: {self.config.n_layers}層 SAGEConv "
-            f"(hidden={self.config.hidden_dim}, params={n_params:,})"
+            f"(hidden={self.config.hidden_dim}, features={self.config.n_features}, "
+            f"params={n_params:,})"
         )
 
         # Step 3 — データ準備
@@ -98,6 +111,9 @@ class GNNToolkit:
             for f, lv in zip(vtu_files, load_values)
         ]
         print(f"  学習ファイル数: {len(datasets)}")
+        for f, d in zip(vtu_files, datasets):
+            print(f"    {os.path.basename(f)}: nodes={d.x.shape[0]}, "
+                  f"edges={d.edge_index.shape[1]//2}")
 
         # Step 4 — 学習ループ
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.lr)
@@ -107,7 +123,11 @@ class GNNToolkit:
 
         self.model.train()
         best_loss, wait = float("inf"), 0
+        best_state = None
         self._loss_history = []
+
+        # 荷重比率の列インデックス
+        ratio_col = 11 if self.config.include_geometry else 4
 
         print(
             f"\n[Step 3] 学習開始 "
@@ -122,8 +142,8 @@ class GNNToolkit:
             for base_data in datasets:
                 for r in self.config.load_ratios:
                     cd = base_data.clone()
-                    mask = cd.x[:, 4] > 0
-                    cd.x[mask, 4] = r
+                    mask = cd.x[:, ratio_col] > 0
+                    cd.x[mask, ratio_col] = r
                     cd.y = base_data.y * r
 
                     out = self.model(cd)
@@ -142,6 +162,7 @@ class GNNToolkit:
             if total_loss < best_loss:
                 best_loss = total_loss
                 wait = 0
+                best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
             else:
                 wait += 1
 
@@ -163,8 +184,12 @@ class GNNToolkit:
                 )
                 break
 
+        # ベストモデルを復元
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+
         print("-" * 60)
-        print(f"[学習完了] 最終 Loss = {total_loss:.6f}")
+        print(f"[学習完了] Best Loss = {best_loss:.6f}")
         return self._loss_history
 
     # ==================================================================
@@ -178,16 +203,16 @@ class GNNToolkit:
     ) -> Dict[str, float]:
         """
         学習済みモデルで推論し VTU に保存する。
+        未知メッシュ形状にも対応（include_geometry=True 時）。
 
         Returns
         -------
-        dict  — max_disp, max_stress, output
+        dict  — max_disp, max_disp_x/y/z, max_stress, output
         """
-        assert self.model is not None, "先に train() を実行してください"
+        assert self.model is not None, "先に train() または load() を実行してください"
         vtu_file = self._resolve_data(vtu_file)
         if output_vtu is None:
             output_vtu = f"gnn_{int(load_N)}N_result.vtu"
-        # results_dir に保存
         output_vtu = self._resolve_results(output_vtu)
 
         data = FEADataProcessor.to_graph(
@@ -239,7 +264,7 @@ class GNNToolkit:
         load_N: Optional[float] = None,
     ) -> Dict[str, float]:
         """学習データ（正解）との誤差を算出する。"""
-        assert self.model is not None, "先に train() を実行してください"
+        assert self.model is not None, "先に train() または load() を実行してください"
         vtu_file = self._resolve_data(vtu_file)
         if load_N is None:
             load_N = self.config.train_load
@@ -314,8 +339,9 @@ class GNNToolkit:
         print(f"[保存完了] {directory}/")
 
     def load(self, directory: str) -> None:
-        """保存済みモデルを読み込む。"""
+        """保存済みモデルを読み込む。v2 / v3 両モデル対応。"""
         self.config = GNNConfig.load(os.path.join(directory, "config.json"))
+        self.config.update_n_features()
         self.model = StructuralGNN(self.config).to(self.device)
         self.model.load_state_dict(
             torch.load(
@@ -324,11 +350,10 @@ class GNNToolkit:
                 weights_only=True,
             )
         )
-        print(f"[読込完了] {directory}/")
+        mode = "ジオメトリ" if self.config.include_geometry else "レガシー"
+        print(f"[読込完了] {directory}/ (mode={mode}, "
+              f"features={self.config.n_features})")
 
-    # ==================================================================
-    # ユーティリティ
-    # ==================================================================
     # ==================================================================
     # パス解決ヘルパー
     # ==================================================================
@@ -339,11 +364,10 @@ class GNNToolkit:
         joined = os.path.join(self.data_dir, os.path.basename(path))
         if os.path.isfile(joined):
             return joined
-        return path  # 見つからない場合はそのまま返す
+        return path
 
     def _resolve_results(self, path: str) -> str:
         """出力パスを results_dir 配下に配置する。"""
-        # 既にディレクトリ指定がある場合はそのまま
         if os.path.dirname(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             return path

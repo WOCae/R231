@@ -3,6 +3,7 @@ GNNConfig — 設定クラス
 
 データから正規化定数を自動計算し、JSON で永続化する。
 コンストラクタ引数で任意のパラメータをオーバーライド可能。
+v3: ジオメトリ特徴量 (include_geometry) 追加でメッシュ形状変更に対応。
 """
 
 from __future__ import annotations
@@ -31,8 +32,11 @@ class GNNConfig:
     # ── モデル構造 ────────────────────────────────────────
     hidden_dim: int = 128
     n_layers: int = 4
-    n_features: int = 5       # x, y, z, is_fixed, load_feat
+    n_features: int = 12      # ジオメトリ特徴量 (9) + is_fixed + load_feat + load_ratio
     n_outputs: int = 4        # ux, uy, uz, stress
+
+    # ── ジオメトリ特徴量 ──────────────────────────────────
+    include_geometry: bool = True   # True: 12次元入力, False: 5次元入力（レガシー）
 
     # ── 学習パラメータ ────────────────────────────────────
     epochs: int = 5000
@@ -83,6 +87,38 @@ class GNNConfig:
                 s = np.linalg.norm(s, axis=1)
             self.norm_stress = max(float(np.max(np.abs(s)) * self.to_mpa), 1e-12)
 
+    def auto_calibrate_multi(self, meshes: list, load_values: list) -> None:
+        """複数メッシュからの正規化定数を自動計算する。"""
+        self.auto_calibrate(meshes[0], load_values[0])
+        # 他のメッシュの最大値で更新
+        for mesh in meshes[1:]:
+            keys = list(mesh.point_data.keys())
+            dk = self.disp_key or self._find_key(
+                keys, [["displacement", "disp"], ["u_", "uvw"]]
+            )
+            sk = self.stress_key or self._find_key(
+                keys, [["mises", "von"], ["eqv", "equivalent"], ["stress"]]
+            )
+            if dk and dk in mesh.point_data:
+                d = mesh.point_data[dk]
+                v = max(float(np.max(np.abs(d)) * self.to_mm), 1e-12)
+                if self.norm_disp is not None:
+                    self.norm_disp = max(self.norm_disp, v)
+            if sk and sk in mesh.point_data:
+                s = mesh.point_data[sk]
+                if s.ndim > 1:
+                    s = np.linalg.norm(s, axis=1)
+                v = max(float(np.max(np.abs(s)) * self.to_mpa), 1e-12)
+                if self.norm_stress is not None:
+                    self.norm_stress = max(self.norm_stress, v)
+
+    # ------------------------------------------------------------------
+    # n_features を自動設定
+    # ------------------------------------------------------------------
+    def update_n_features(self) -> None:
+        """include_geometry に応じて n_features を設定する。"""
+        self.n_features = 12 if self.include_geometry else 5
+
     # ------------------------------------------------------------------
     # キー探索
     # ------------------------------------------------------------------
@@ -107,17 +143,23 @@ class GNNConfig:
         """JSON から設定を読み込む。"""
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
+        # v2 → v3 後方互換: include_geometry が無い場合は False (レガシー)
+        if "include_geometry" not in d:
+            d["include_geometry"] = False
+            d["n_features"] = 5
         return cls(**d)
 
     # ------------------------------------------------------------------
     # 表示
     # ------------------------------------------------------------------
     def summary(self) -> str:
+        mode = "ジオメトリ12次元" if self.include_geometry else "レガシー5次元"
         lines = [
             f"  座標正規化  : {self.norm_coord}",
             f"  変位キー    : {self.disp_key}  (正規化 = {self.norm_disp} mm)",
             f"  応力キー    : {self.stress_key}  (正規化 = {self.norm_stress} MPa)",
             f"  基準荷重    : {self.train_load} N",
+            f"  入力特徴量  : {mode} (n_features={self.n_features})",
             f"  モデル      : {self.n_layers}層 × hidden={self.hidden_dim}",
             f"  学習        : epochs={self.epochs}, lr={self.lr}, "
             f"patience={self.patience}",

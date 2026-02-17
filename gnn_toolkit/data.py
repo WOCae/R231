@@ -3,10 +3,12 @@ FEADataProcessor — VTU 自動解析・境界条件検出・グラフ変換
 
 VTU ファイルを読み込み、PyTorch Geometric の Data オブジェクトに変換する。
 境界条件（拘束面 / 荷重面）は変位データから自動検出する。
+v3: ジオメトリ特徴量 (正規化座標・次数・エッジ長統計・擬似法線) 追加。
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -103,6 +105,86 @@ class FEADataProcessor:
         return is_fixed, is_load
 
     # ------------------------------------------------------------------
+    # ジオメトリ特徴量の計算
+    # ------------------------------------------------------------------
+    @staticmethod
+    def compute_geometry_features(
+        pos: np.ndarray,
+        edge_index: torch.Tensor,
+    ) -> np.ndarray:
+        """
+        ノードごとのジオメトリ特徴量を計算する。
+
+        Parameters
+        ----------
+        pos : ndarray (N, 3)
+            ノード座標
+        edge_index : Tensor (2, E)
+            エッジインデックス（双方向）
+
+        Returns
+        -------
+        ndarray (N, 9)
+            [正規化座標(3), 正規化次数(1), 平均エッジ長(1),
+             エッジ長標準偏差(1), 擬似法線(3)]
+        """
+        n = len(pos)
+
+        # 正規化座標 (bbox → [0, 1])
+        bbox_min = pos.min(axis=0)
+        bbox_max = pos.max(axis=0)
+        bbox_range = bbox_max - bbox_min
+        bbox_range[bbox_range < 1e-12] = 1.0
+        norm_coords = (pos - bbox_min) / bbox_range
+
+        # 隣接情報構築
+        src = edge_index[0].numpy()
+        dst = edge_index[1].numpy()
+
+        neighbors = defaultdict(list)
+        for s, d in zip(src, dst):
+            neighbors[int(s)].append(int(d))
+
+        degree = np.zeros(n, dtype=np.float32)
+        edge_len_mean = np.zeros(n, dtype=np.float32)
+        edge_len_std = np.zeros(n, dtype=np.float32)
+        pseudo_normal = np.zeros((n, 3), dtype=np.float32)
+
+        for i in range(n):
+            nbrs = neighbors[i]
+            deg = len(nbrs)
+            degree[i] = deg
+            if deg == 0:
+                continue
+            nbr_pts = pos[nbrs]
+            diff = nbr_pts - pos[i]
+            dists = np.linalg.norm(diff, axis=1)
+            edge_len_mean[i] = dists.mean()
+            edge_len_std[i] = dists.std() if deg > 1 else 0.0
+            mean_dir = diff.mean(axis=0)
+            norm = np.linalg.norm(mean_dir)
+            if norm > 1e-12:
+                pseudo_normal[i] = mean_dir / norm
+
+        # 正規化
+        max_deg = degree.max() if degree.max() > 0 else 1.0
+        degree_norm = degree / max_deg
+
+        max_el = edge_len_mean.max() if edge_len_mean.max() > 0 else 1.0
+        edge_len_mean_norm = edge_len_mean / max_el
+
+        max_es = edge_len_std.max() if edge_len_std.max() > 0 else 1.0
+        edge_len_std_norm = edge_len_std / max_es
+
+        return np.column_stack([
+            norm_coords,                   # 3
+            degree_norm[:, None],          # 1
+            edge_len_mean_norm[:, None],   # 1
+            edge_len_std_norm[:, None],    # 1
+            pseudo_normal,                 # 3
+        ]).astype(np.float32)
+
+    # ------------------------------------------------------------------
     # VTU → PyG Data
     # ------------------------------------------------------------------
     @staticmethod
@@ -111,7 +193,6 @@ class FEADataProcessor:
         mesh = pv.read(vtu_path)
         mesh = mesh.cell_data_to_point_data()
         pos = mesh.points
-        pos_norm = pos / config.norm_coord
 
         # ラベル
         y = np.zeros((pos.shape[0], config.n_outputs))
@@ -127,17 +208,29 @@ class FEADataProcessor:
 
         # 境界条件
         is_fixed, is_load = FEADataProcessor.detect_bc(mesh, disp_data)
-        load_feat = is_load * (load_N / config.train_load)
-
-        x = torch.tensor(
-            np.column_stack([pos_norm, is_fixed, load_feat]),
-            dtype=torch.float,
-        )
 
         # エッジ（双方向）
         edges = mesh.extract_all_edges().lines.reshape(-1, 3)[:, 1:]
         ei = torch.tensor(edges, dtype=torch.long).t().contiguous()
         ei = torch.cat([ei, ei.flip(0)], dim=1)
+
+        # 特徴量構築
+        if config.include_geometry:
+            # ジオメトリ12次元: geo(9) + is_fixed(1) + is_load(1) + load_ratio(1)
+            geo = FEADataProcessor.compute_geometry_features(pos, ei)
+            load_ratio = is_load * (load_N / config.train_load)
+            x = torch.tensor(
+                np.column_stack([geo, is_fixed, is_load, load_ratio]),
+                dtype=torch.float,
+            )
+        else:
+            # レガシー5次元: pos_norm(3) + is_fixed(1) + load_feat(1)
+            pos_norm = pos / config.norm_coord
+            load_feat = is_load * (load_N / config.train_load)
+            x = torch.tensor(
+                np.column_stack([pos_norm, is_fixed, load_feat]),
+                dtype=torch.float,
+            )
 
         return Data(x=x, edge_index=ei, y=torch.tensor(y, dtype=torch.float))
 
