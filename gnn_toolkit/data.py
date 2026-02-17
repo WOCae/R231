@@ -3,7 +3,7 @@ FEADataProcessor — VTU 自動解析・境界条件検出・グラフ変換
 
 VTU ファイルを読み込み、PyTorch Geometric の Data オブジェクトに変換する。
 境界条件（拘束面 / 荷重面）は変位データから自動検出する。
-v3: ジオメトリ特徴量 (正規化座標・次数・エッジ長統計・擬似法線) 追加。
+v3.1: 荷重方向ベクトル化で引張・曲げ等の複数荷重方向に対応。
 """
 
 from __future__ import annotations
@@ -185,11 +185,54 @@ class FEADataProcessor:
         ]).astype(np.float32)
 
     # ------------------------------------------------------------------
+    # 荷重方向の自動検出
+    # ------------------------------------------------------------------
+    @staticmethod
+    def detect_load_direction(
+        mesh: pv.UnstructuredGrid,
+        disp_data: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """
+        変位データから荷重方向の単位ベクトルを推定する。
+
+        変位が最大のノードの変位方向を荷重方向とみなす。
+        変位データがない場合は最長軸方向 [1,0,0] を返す。
+
+        Returns
+        -------
+        ndarray (3,) — 単位荷重方向ベクトル
+        """
+        if disp_data is not None and disp_data.ndim == 2 and disp_data.shape[1] == 3:
+            mag = np.linalg.norm(disp_data, axis=1)
+            max_idx = int(np.argmax(mag))
+            if mag[max_idx] > 1e-12:
+                d = disp_data[max_idx]
+                return d / np.linalg.norm(d)
+        # フォールバック: 最長軸方向
+        ranges = mesh.points.max(axis=0) - mesh.points.min(axis=0)
+        ax = int(np.argmax(ranges))
+        direction = np.zeros(3)
+        direction[ax] = 1.0
+        return direction
+
+    # ------------------------------------------------------------------
     # VTU → PyG Data
     # ------------------------------------------------------------------
     @staticmethod
-    def to_graph(vtu_path: str, load_N: float, config: GNNConfig) -> Data:
-        """VTU ファイルを PyTorch Geometric の Data オブジェクトに変換する。"""
+    def to_graph(
+        vtu_path: str,
+        load_N: float,
+        config: GNNConfig,
+        load_direction: Optional[np.ndarray] = None,
+    ) -> Data:
+        """
+        VTU ファイルを PyTorch Geometric の Data オブジェクトに変換する。
+
+        Parameters
+        ----------
+        load_direction : ndarray (3,), optional
+            荷重方向の単位ベクトル。None の場合は変位から自動検出。
+        """
         mesh = pv.read(vtu_path)
         mesh = mesh.cell_data_to_point_data()
         pos = mesh.points
@@ -209,6 +252,10 @@ class FEADataProcessor:
         # 境界条件
         is_fixed, is_load = FEADataProcessor.detect_bc(mesh, disp_data)
 
+        # 荷重方向の自動検出
+        if load_direction is None:
+            load_direction = FEADataProcessor.detect_load_direction(mesh, disp_data)
+
         # エッジ（双方向）
         edges = mesh.extract_all_edges().lines.reshape(-1, 3)[:, 1:]
         ei = torch.tensor(edges, dtype=torch.long).t().contiguous()
@@ -216,19 +263,26 @@ class FEADataProcessor:
 
         # 特徴量構築
         if config.include_geometry:
-            # ジオメトリ12次元: geo(9) + is_fixed(1) + is_load(1) + load_ratio(1)
+            # ジオメトリ14次元: geo(9) + is_fixed(1) + is_load(1) + Fx(1) + Fy(1) + Fz(1)
             geo = FEADataProcessor.compute_geometry_features(pos, ei)
-            load_ratio = is_load * (load_N / config.train_load)
+            load_ratio = load_N / config.train_load
+            # 荷重ノードにのみ方向付き荷重ベクトルを設定
+            fx = is_load * load_direction[0] * load_ratio
+            fy = is_load * load_direction[1] * load_ratio
+            fz = is_load * load_direction[2] * load_ratio
             x = torch.tensor(
-                np.column_stack([geo, is_fixed, is_load, load_ratio]),
+                np.column_stack([geo, is_fixed, is_load, fx, fy, fz]),
                 dtype=torch.float,
             )
         else:
-            # レガシー5次元: pos_norm(3) + is_fixed(1) + load_feat(1)
+            # レガシー8次元: pos_norm(3) + is_fixed(1) + is_load(1) + Fx(1) + Fy(1) + Fz(1)
             pos_norm = pos / config.norm_coord
-            load_feat = is_load * (load_N / config.train_load)
+            load_ratio = load_N / config.train_load
+            fx = is_load * load_direction[0] * load_ratio
+            fy = is_load * load_direction[1] * load_ratio
+            fz = is_load * load_direction[2] * load_ratio
             x = torch.tensor(
-                np.column_stack([pos_norm, is_fixed, load_feat]),
+                np.column_stack([pos_norm, is_fixed, is_load, fx, fy, fz]),
                 dtype=torch.float,
             )
 
@@ -242,6 +296,7 @@ class FEADataProcessor:
         inp_path: str,
         load_N: Optional[float],
         config: GNNConfig,
+        load_direction: Optional[np.ndarray] = None,
     ) -> tuple:
         """
         CalculiX .inp ファイルから PyG Data を構築する。
@@ -254,6 +309,8 @@ class FEADataProcessor:
             荷重値 [N]。None の場合はファイル内 CLOAD から自動計算
         config : GNNConfig
             設定
+        load_direction : ndarray (3,), optional
+            荷重方向の単位ベクトル。None の場合は CLOAD から自動取得
 
         Returns
         -------
@@ -277,19 +334,29 @@ class FEADataProcessor:
         is_fixed = reader.get_fixed_mask()
         is_load = reader.get_load_mask()
 
+        # 荷重方向: CLOAD から自動取得
+        if load_direction is None:
+            load_direction = reader.get_load_direction()
+
         # 特徴量構築
         if config.include_geometry:
             geo = FEADataProcessor.compute_geometry_features(pos, ei)
-            load_ratio = is_load * (load_N / config.train_load)
+            load_ratio = load_N / config.train_load
+            fx = is_load * load_direction[0] * load_ratio
+            fy = is_load * load_direction[1] * load_ratio
+            fz = is_load * load_direction[2] * load_ratio
             x = torch.tensor(
-                np.column_stack([geo, is_fixed, is_load, load_ratio]),
+                np.column_stack([geo, is_fixed, is_load, fx, fy, fz]),
                 dtype=torch.float,
             )
         else:
             pos_norm = pos / config.norm_coord
-            load_feat = is_load * (load_N / config.train_load)
+            load_ratio = load_N / config.train_load
+            fx = is_load * load_direction[0] * load_ratio
+            fy = is_load * load_direction[1] * load_ratio
+            fz = is_load * load_direction[2] * load_ratio
             x = torch.tensor(
-                np.column_stack([pos_norm, is_fixed, load_feat]),
+                np.column_stack([pos_norm, is_fixed, is_load, fx, fy, fz]),
                 dtype=torch.float,
             )
 

@@ -2,7 +2,7 @@
 StructuralGNN — 汎用構造解析グラフニューラルネットワーク
 
 Encoder → Processor (残差 SAGEConv × N 層) → Decoder (変位 / 応力ヘッド)
-v3: 入力次元を config.n_features で可変化（12次元ジオメトリ / 5次元レガシー）
+v3.1: 荷重方向ベクトル (3成分) 対応。入力次元を config.n_features で可変化。
 """
 
 from __future__ import annotations
@@ -70,13 +70,17 @@ class StructuralGNN(nn.Module):
     def forward(self, data: Data) -> torch.Tensor:
         x, ei = data.x, data.edge_index
 
-        # 荷重比率の取得
+        # 荷重ベクトル (Fx, Fy, Fz) の取得
         if self._include_geometry:
-            # ジオメトリモード: x[:,11] = load_ratio
-            ratio = torch.max(data.x[:, 11])
+            # ジオメトリモード: x[:,11]=Fx, x[:,12]=Fy, x[:,13]=Fz
+            load_vec = data.x[:, 11:14]  # (N, 3)
         else:
-            # レガシーモード: x[:,4] = load_feat
-            ratio = torch.max(data.x[:, 4])
+            # レガシーモード: x[:,5]=Fx, x[:,6]=Fy, x[:,7]=Fz
+            load_vec = data.x[:, 5:8]    # (N, 3)
+
+        # スケーリング用のスカラー比率 = 荷重ベクトルのノルム最大値
+        load_mag = torch.norm(load_vec, dim=1)  # (N,)
+        ratio = torch.max(load_mag)
 
         h = self.encoder(x)
         for blk in self.blocks:

@@ -2,7 +2,7 @@
 
 | 項目       | 内容                           |
 |-----------|-------------------------------|
-| バージョン | 3.0.0                         |
+| バージョン | 3.1.0                         |
 | 作成日     | 2026-02-17                    |
 | 言語       | Python 3.10+                  |
 | フレームワーク | PyTorch / PyTorch Geometric |
@@ -11,7 +11,7 @@
 
 ## 1. 概要
 
-本ツールキットは、有限要素解析（FEA）の結果ファイル（VTU形式）からグラフニューラルネットワーク（GNN）を自動構築・学習し、**任意の荷重条件**および**異なるメッシュ形状**での応力・変位を高速に推論するソフトウェアである。
+本ツールキットは、有限要素解析（FEA）の結果ファイル（VTU形式）からグラフニューラルネットワーク（GNN）を自動構築・学習し、**任意の荷重条件・荷重方向**および**異なるメッシュ形状**での応力・変位を高速に推論するソフトウェアである。
 
 GUI（ipywidgets）と Python API の2つのインターフェースを提供し、Jupyter Notebook 上での直観的な操作と、スクリプトからの自動化の両方に対応する。
 
@@ -20,6 +20,7 @@ GUI（ipywidgets）と Python API の2つのインターフェースを提供し
 | 推論パターン | 説明 | 必要データ |
 |-------------|------|----------|
 | **荷重スケーリング** | 同メッシュ・異荷重 | 1ファイル以上 |
+| **荷重方向変更** | 同メッシュ・引張+曲げ等 | 各方向のVTU |
 | **形状汎化** | 異メッシュ・任意荷重 | 複数形状ファイル推奨 |
 
 ---
@@ -65,7 +66,7 @@ R231/
 | `train_load` | float | 1000.0 | 基準荷重 [N] |
 | `hidden_dim` | int | 128 | 隠れ層の次元数 |
 | `n_layers` | int | 4 | GNN 層数 |
-| `n_features` | int | 12 | 入力特徴量数（12:ジオメトリ / 5:レガシー） |
+| `n_features` | int | 14 | 入力特徴量数（14:ジオメトリ / 8:レガシー） |
 | `n_outputs` | int | 4 | 出力次元数 (ux,uy,uz,stress) |
 | `include_geometry` | bool | True | ジオメトリ特徴量の使用（形状汎化モード） |
 | `epochs` | int | 5000 | 最大学習エポック数 |
@@ -112,7 +113,9 @@ VTU ファイルの読込・解析・境界条件検出・PyG グラフ変換を
 |---|---|---|---|
 | `analyze` | `path: str` | UnstructuredGrid | VTU の構造を解析・表示 |
 | `detect_bc` | `mesh`, `disp_data?` | `(is_fixed, is_load)` | 境界条件の自動検出 |
-| `to_graph` | `vtu_path`, `load_N`, `config` | `Data` | VTU → PyG Data 変換 |
+| `to_graph` | `vtu_path`, `load_N`, `config`, `load_direction?` | `Data` | VTU → PyG Data 変換 |
+| `to_graph_from_inp` | `inp_path`, `load_N?`, `config`, `load_direction?` | `(Data, InpFileReader)` | INP → PyG Data 変換 |
+| `detect_load_direction` | `mesh`, `disp_data?` | ndarray(3) | 荷重方向の自動検出 |
 | `compute_geometry_features` | `pos`, `edge_index` | ndarray(N,9) | ジオメトリ特徴量計算 |
 | `list_vtu_files` | `directory?` | list[str] | ディレクトリ内の VTU 一覧 |
 
@@ -127,7 +130,7 @@ ELSE:
     荷重ノード = 最長軸の max 端
 ```
 
-#### ノード特徴量（ジオメトリモード: 12次元, `include_geometry=True`）
+#### ノード特徴量（ジオメトリモード: 14次元, `include_geometry=True`）
 
 | Index | 内容 | 正規化 |
 |---|---|---|
@@ -138,20 +141,25 @@ ELSE:
 | 6–8 | 擬似法線（隣接ベクトル平均方向） | 単位ベクトル |
 | 9 | 拘束フラグ | 0 or 1 |
 | 10 | 荷重面フラグ | 0 or 1 |
-| 11 | 荷重比率 | is_load × (load_N / train_load) |
+| 11 | 荷重Fx | is_load × direction[0] × (load_N/train_load) |
+| 12 | 荷重Fy | is_load × direction[1] × (load_N/train_load) |
+| 13 | 荷重Fz | is_load × direction[2] × (load_N/train_load) |
 
-ジオメトリ特徴量により、未知のメッシュ形状でも局所的な接続パターン・形状情報を
-エンコードし、推論が可能となる。
+荷重方向ベクトル (Fx, Fy, Fz) により、引張・曲げ・任意方向の荷重条件を学習・推論できる。
 
-#### ノード特徴量（レガシーモード: 5次元, `include_geometry=False`）
+#### ノード特徴量（レガシーモード: 8次元, `include_geometry=False`）
 
 | Index | 内容 | 正規化 |
 |---|---|---|
 | 0–2 | 座標 (x, y, z) | ÷ norm_coord |
 | 3 | 拘束フラグ | 0 or 1 |
-| 4 | 荷重特徴量 | is_load × (load_N / train_load) |
+| 4 | 荷重面フラグ | 0 or 1 |
+| 5 | 荷重Fx | is_load × direction[0] × (load_N/train_load) |
+| 6 | 荷重Fy | is_load × direction[1] × (load_N/train_load) |
+| 7 | 荷重Fz | is_load × direction[2] × (load_N/train_load) |
 
 レガシーモードは v2 以前との後方互換。同メッシュ・荷重スケーリングのみ対応。
+荷重方向ベクトルは v3.1 で追加。
 
 ---
 
@@ -188,6 +196,7 @@ CalculiX .inp ファイルを解析し、メッシュ・境界条件・荷重情
 | `get_fixed_mask()` | ndarray(N) | 拘束マスク (0/1) |
 | `get_load_mask()` | ndarray(N) | 荷重マスク (0/1) |
 | `get_total_load()` | float | CLOAD 合力ノルム [N] |
+| `get_load_direction()` | ndarray(3) | CLOAD 荷重方向単位ベクトル |
 | `to_pyvista()` | UnstructuredGrid | PyVista メッシュ構築 |
 | `summary()` | str | 解析サマリー |
 
@@ -200,7 +209,7 @@ CalculiX .inp ファイルを解析し、メッシュ・境界条件・荷重情
 #### アーキテクチャ図
 
 ```
-入力 (12次元 [ジオメトリ] / 5次元 [レガシー])
+入力 (14次元 [ジオメトリ] / 8次元 [レガシー])
   ↓
 [Encoder] Linear → ReLU → Linear     → 潜在空間 (hidden_dim)
   ↓
@@ -211,7 +220,7 @@ CalculiX .inp ファイルを解析し、メッシュ・境界条件・荷重情
   ├→ disp_head:   Linear→ReLU→Linear→ReLU→Linear → 3次元 (ux,uy,uz)
   └→ stress_head: Linear→ReLU→Linear→ReLU→Linear → 1次元 (σ_mises)
   ↓
-  × load_ratio  (linear_scaling=True の場合)
+  × ||load_vec||  (linear_scaling=True の場合、荷重ベクトルのノルム)
   ↓
 出力 (4次元)
 ```
@@ -241,8 +250,8 @@ GNNToolkit(**kwargs)
 
 | メソッド | 引数 | 戻り値 | 説明 |
 |---|---|---|---|
-| `train` | `vtu_files`, `load_values?`, `callback?` | list[float] | GNN モデルを学習。Loss 履歴を返す |
-| `predict` | `mesh_file`, `load_N?`, `output_vtu?` | dict | 推論結果を VTU に保存（VTU / .inp 両対応） |
+| `train` | `vtu_files`, `load_values?`, `load_directions?`, `callback?` | list[float] | GNN モデルを学習。Loss 履歴を返す |
+| `predict` | `mesh_file`, `load_N?`, `output_vtu?`, `load_direction?` | dict | 推論結果を VTU に保存（VTU / .inp 両対応） |
 | `evaluate` | `vtu_file`, `load_N?` | dict | 正解との誤差を算出 |
 | `save` | `directory: str` | None | モデルと設定を保存 |
 | `load` | `directory: str` | None | 保存済みモデルを読込 |
@@ -317,7 +326,7 @@ ipywidgets ベースの対話型 GUI。5つのタブで全操作をカバーす�
 | タブ | 機能 | 操作項目 |
 |---|---|---|
 | **学習** | GNN モデルの学習 | VTU選択、基準荷重、Epochs、Hidden、層数、応力重み、Patience、学習率、線形スケーリング |
-| **推論** | 任意荷重での推論 | VTU選択、荷重値、出力ファイル名 |
+| **推論** | 任意荷重での推論 | VTU/INP選択、荷重値、荷重方向、出力ファイル名 |
 | **評価** | 精度評価・Loss曲線 | VTU選択、荷重値、精度評価ボタン、Loss曲線ボタン |
 | **保存/読込** | モデルの永続化 | 保存先入力、読込元選択、ファイル更新 |
 | **VTU解析** | VTU ファイルの中身確認 | VTU選択、解析ボタン |
@@ -395,7 +404,21 @@ tk.train(
 tk.predict("mesh_C.vtu", load_N=750.0)
 ```
 
-### 4.6 CalculiX .inp ファイルから推論
+### 4.6 荷重方向汎化学習（引張 + 曲げ）
+
+```python
+# 引張と曲げの2種のVTUで学習
+tk = GNNToolkit(train_load=1000.0)
+tk.train(
+    ["tension_1000N.vtu", "bending_1000N.vtu"],
+    load_values=[1000, 1000],
+)  # 荷重方向は変位から自動検出
+
+# .inp で任意方向の推論（CLOADから荷重方向自動取得）
+tk.predict("FEMMeshNetgen.inp")
+```
+
+### 4.7 CalculiX .inp ファイルから推論
 
 ```python
 # 拘束・荷重を .inp から明示的に読み取り
@@ -403,7 +426,7 @@ tk.predict("FEMMeshNetgen.inp")              # 荷重は CLOAD から自動計�
 tk.predict("FEMMeshNetgen.inp", load_N=2000) # 荷重を変更して推論
 ```
 
-### 4.7 保存済みモデルの再利用
+### 4.8 保存済みモデルの再利用
 
 ```python
 tk = GNNToolkit()

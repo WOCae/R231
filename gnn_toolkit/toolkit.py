@@ -1,21 +1,23 @@
 """
 GNNToolkit — 学習・推論・保存・評価を統合するファサードクラス
 
+v3.1: 荷重方向ベクトル化で引張・曲げ等の複数荷重方向に対応。
+
 使い方:
     tk = GNNToolkit(train_load=1000.0)
-    tk.train("result_1000N.vtu")
+    tk.train("result_1000N.vtu")  # 荷重方向は変位から自動検出
     tk.predict("result_1000N.vtu", load_N=500.0)
     tk.save("saved_model")
     tk.load("saved_model")
 
-    # 複数メッシュ学習（形状汎化）
-    tk = GNNToolkit(train_load=1000.0, include_geometry=True)
-    tk.train(["mesh_A.vtu", "mesh_B.vtu"], load_values=[1000, 500])
-    tk.predict("mesh_C.vtu", load_N=750.0)  # 未知形状にも推論可能
+    # 複数荷重方向学習（引張 + 曲げ）
+    tk.train(
+        ["tension_1000N.vtu", "bending_1000N.vtu"],
+        load_values=[1000, 1000],
+    )  # 荷重方向は各VTUの変位から自動検出
 
-    # CalculiX .inp ファイルから推論（拘束・荷重を明示定義）
-    tk.predict("FEMMeshNetgen.inp")             # 荷重は CLOAD から自動取得
-    tk.predict("FEMMeshNetgen.inp", load_N=2000) # 荷重を変更して推論
+    # CalculiX .inp ファイルから推論（荷重方向はCLOADから自動取得）
+    tk.predict("FEMMeshNetgen.inp")
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ class GNNToolkit:
         vtu_files: Union[str, List[str]],
         load_values: Optional[Union[float, List[float]]] = None,
         *,
+        load_directions: Optional[List[Optional[np.ndarray]]] = None,
         callback=None,
     ) -> List[float]:
         """
@@ -70,6 +73,8 @@ class GNNToolkit:
             学習用 VTU ファイル（パス）。複数指定で形状汎化学習。
         load_values : float | list[float], optional
             各ファイルの荷重値 [N]（省略時は config.train_load）
+        load_directions : list[ndarray(3,)], optional
+            各ファイルの荷重方向単位ベクトル。None の場合は変位から自動検出。
         callback : callable, optional
             ``callback(epoch, loss, best_loss, lr)`` — epoch ごとに呼ばれる
 
@@ -87,6 +92,8 @@ class GNNToolkit:
             load_values = [float(load_values)] * len(vtu_files)
         if len(load_values) == 1 and len(vtu_files) > 1:
             load_values = load_values * len(vtu_files)
+        if load_directions is None:
+            load_directions = [None] * len(vtu_files)
 
         # Step 1 — キャリブレーション
         print("=" * 60)
@@ -111,8 +118,8 @@ class GNNToolkit:
 
         # Step 3 — データ準備
         datasets = [
-            FEADataProcessor.to_graph(f, lv, self.config).to(self.device)
-            for f, lv in zip(vtu_files, load_values)
+            FEADataProcessor.to_graph(f, lv, self.config, ld).to(self.device)
+            for f, lv, ld in zip(vtu_files, load_values, load_directions)
         ]
         print(f"  学習ファイル数: {len(datasets)}")
         for f, d in zip(vtu_files, datasets):
@@ -130,8 +137,11 @@ class GNNToolkit:
         best_state = None
         self._loss_history = []
 
-        # 荷重比率の列インデックス
-        ratio_col = 11 if self.config.include_geometry else 4
+        # 荷重ベクトル列インデックス (Fx, Fy, Fz)
+        if self.config.include_geometry:
+            load_cols = [11, 12, 13]  # geo(9) + is_fixed(1) + is_load(1) → 11,12,13
+        else:
+            load_cols = [5, 6, 7]     # pos(3) + is_fixed(1) + is_load(1) → 5,6,7
 
         print(
             f"\n[Step 3] 学習開始 "
@@ -146,8 +156,10 @@ class GNNToolkit:
             for base_data in datasets:
                 for r in self.config.load_ratios:
                     cd = base_data.clone()
-                    mask = cd.x[:, ratio_col] > 0
-                    cd.x[mask, ratio_col] = r
+                    # 荷重ベクトル (Fx, Fy, Fz) をスケーリング
+                    for col in load_cols:
+                        mask = cd.x[:, col].abs() > 0
+                        cd.x[mask, col] = base_data.x[mask, col] * r
                     cd.y = base_data.y * r
 
                     out = self.model(cd)
@@ -204,6 +216,7 @@ class GNNToolkit:
         mesh_file: str,
         load_N: Optional[float] = None,
         output_vtu: Optional[str] = None,
+        load_direction: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """
         学習済みモデルで推論し VTU に保存する。
@@ -220,6 +233,8 @@ class GNNToolkit:
             .inp の場合は省略時 CLOAD から自動計算
         output_vtu : str, optional
             出力 VTU ファイル名（省略時は自動生成）
+        load_direction : ndarray (3,), optional
+            荷重方向の単位ベクトル。None の場合は自動推定。
 
         Returns
         -------
@@ -229,7 +244,7 @@ class GNNToolkit:
 
         # .inp ファイルの場合は専用処理
         if mesh_file.lower().endswith(".inp"):
-            return self._predict_from_inp(mesh_file, load_N, output_vtu)
+            return self._predict_from_inp(mesh_file, load_N, output_vtu, load_direction)
 
         # --- VTU ファイル処理 ---
         vtu_file = self._resolve_data(mesh_file)
@@ -287,12 +302,13 @@ class GNNToolkit:
         inp_file: str,
         load_N: Optional[float] = None,
         output_vtu: Optional[str] = None,
+        load_direction: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
         """CalculiX .inp ファイルから推論する。"""
         inp_file = self._resolve_data(inp_file)
 
         data, reader = FEADataProcessor.to_graph_from_inp(
-            inp_file, load_N, self.config
+            inp_file, load_N, self.config, load_direction
         )
 
         # load_N が None の場合はファイルから取得済み

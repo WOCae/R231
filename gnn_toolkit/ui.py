@@ -4,7 +4,7 @@ GNNToolkitUI — ipywidgets ベースの対話型 GUI
 Colab (ipywidgets 7.x) / ローカル (8.x) 両対応。
 Tab / Accordion は Colab で描画されないため、
 ToggleButtons + Output でページ切替を行う。
-v3: ジオメトリ特徴量ON/OFF + 複数VTU学習対応
+v3.1: 荷重方向ベクトル対応 + 複数VTU学習対応
 """
 
 from __future__ import annotations
@@ -127,11 +127,18 @@ class GNNToolkitUI:
         # 2) 推論
         self.w_pred_file = widgets.Dropdown(options=_mesh_files(self.data_dir), description="メッシュ:", layout=self._WIDE)
         self.w_pred_load = widgets.FloatText(value=500.0, description="荷重[N]:", layout=self._WIDE)
+        self.w_pred_dir = widgets.Dropdown(
+            options=["自動検出", "+X", "-X", "+Y", "-Y", "+Z", "-Z"],
+            value="自動検出",
+            description="荷重方向:",
+            layout=self._WIDE,
+        )
         self.w_pred_output = widgets.Text(value="", description="出力名:",
                                           placeholder="(自動)", layout=self._WIDE)
         self.btn_predict = widgets.Button(description="⚡ 推論実行", button_style="success", layout=self._BTN)
         self.btn_predict.on_click(self._on_predict)
-        page_predict = widgets.VBox([self.w_pred_file, self.w_pred_load, self.w_pred_output, self.btn_predict])
+        page_predict = widgets.VBox([self.w_pred_file, self.w_pred_load,
+                                     self.w_pred_dir, self.w_pred_output, self.btn_predict])
 
         # 3) 評価
         self.w_eval_file = widgets.Dropdown(options=vtu_list, description="VTU:", layout=self._WIDE)
@@ -263,8 +270,11 @@ class GNNToolkitUI:
             if self.tk is None or not self.tk.is_trained:
                 self._set_status("先にモデルを学習または読込してください", "red"); return
             self._set_status("推論中…", "blue")
+            # 荷重方向の解釈
+            load_direction = self._parse_load_direction(self.w_pred_dir.value)
             res = self.tk.predict(self.w_pred_file.value, self.w_pred_load.value,
-                                  self.w_pred_output.value.strip() or None)
+                                  self.w_pred_output.value.strip() or None,
+                                  load_direction=load_direction)
             self._set_status(
                 f"推論完了 — "
                 f"X:{res['max_disp_x']:.4f} / "
@@ -346,6 +356,23 @@ class GNNToolkitUI:
                 from .data import FEADataProcessor
                 FEADataProcessor.analyze(f)
             self._set_status(f"{os.path.basename(f)} の解析完了", "green")
+
+    # ==================================================================
+    # ヘルパー: 荷重方向パース
+    # ==================================================================
+    @staticmethod
+    def _parse_load_direction(label: str):
+        """Dropdown のラベルを ndarray(3,) に変換。'自動検出' は None を返す。"""
+        import numpy as np
+        _MAP = {
+            "+X": np.array([1.0, 0.0, 0.0]),
+            "-X": np.array([-1.0, 0.0, 0.0]),
+            "+Y": np.array([0.0, 1.0, 0.0]),
+            "-Y": np.array([0.0, -1.0, 0.0]),
+            "+Z": np.array([0.0, 0.0, 1.0]),
+            "-Z": np.array([0.0, 0.0, -1.0]),
+        }
+        return _MAP.get(label, None)
 
     # ==================================================================
     # リフレッシュ

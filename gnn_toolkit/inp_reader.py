@@ -302,6 +302,24 @@ class InpFileReader:
                 force[dof - 1] += value
         return float(np.linalg.norm(force))
 
+    def get_load_direction(self) -> np.ndarray:
+        """
+        CLOAD から荷重方向の単位ベクトルを返す。
+
+        Returns
+        -------
+        ndarray (3,) — 荷重方向の単位ベクトル
+        """
+        force = np.zeros(3)
+        for _, dof, value in self._load_entries:
+            if 1 <= dof <= 3:
+                force[dof - 1] += value
+        norm = np.linalg.norm(force)
+        if norm > 1e-12:
+            return force / norm
+        # フォールバック: Y方向
+        return np.array([0.0, 1.0, 0.0])
+
     # ------------------------------------------------------------------
     # サマリー
     # ------------------------------------------------------------------

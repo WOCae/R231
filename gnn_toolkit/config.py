@@ -32,7 +32,7 @@ class GNNConfig:
     # ── モデル構造 ────────────────────────────────────────
     hidden_dim: int = 128
     n_layers: int = 4
-    n_features: int = 12      # ジオメトリ特徴量 (9) + is_fixed + load_feat + load_ratio
+    n_features: int = 14      # ジオメトリ特徴量 (9) + is_fixed + is_load + Fx + Fy + Fz
     n_outputs: int = 4        # ux, uy, uz, stress
 
     # ── ジオメトリ特徴量 ──────────────────────────────────
@@ -117,7 +117,7 @@ class GNNConfig:
     # ------------------------------------------------------------------
     def update_n_features(self) -> None:
         """include_geometry に応じて n_features を設定する。"""
-        self.n_features = 12 if self.include_geometry else 5
+        self.n_features = 14 if self.include_geometry else 8
 
     # ------------------------------------------------------------------
     # キー探索
@@ -143,17 +143,18 @@ class GNNConfig:
         """JSON から設定を読み込む。"""
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
-        # v2 → v3 後方互換: include_geometry が無い場合は False (レガシー)
+        # v2 → v3 後方互換
         if "include_geometry" not in d:
             d["include_geometry"] = False
             d["n_features"] = 5
+        # v3.0 (12次元) → v3.1 (14次元) 互換: n_features はロード後に再設定
         return cls(**d)
 
     # ------------------------------------------------------------------
     # 表示
     # ------------------------------------------------------------------
     def summary(self) -> str:
-        mode = "ジオメトリ12次元" if self.include_geometry else "レガシー5次元"
+        mode = f"ジオメトリ{self.n_features}次元" if self.include_geometry else f"レガシー{self.n_features}次元"
         lines = [
             f"  座標正規化  : {self.norm_coord}",
             f"  変位キー    : {self.disp_key}  (正規化 = {self.norm_disp} mm)",
