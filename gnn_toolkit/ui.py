@@ -50,8 +50,12 @@ class GNNToolkitUI:
         border="1px solid #ccc", overflow_y="auto",
     )
 
-    def __init__(self, work_dir: str = ".") -> None:
+    def __init__(self, work_dir: str = ".",
+                 data_dir: str = "data",
+                 results_dir: str = "results") -> None:
         self.work_dir = work_dir
+        self.data_dir = data_dir
+        self.results_dir = results_dir
         self.tk: Optional[GNNToolkit] = None
         self._build()
 
@@ -65,7 +69,7 @@ class GNNToolkitUI:
             "VTU から学習 → 任意荷重で推論 → モデル保存/読込</p>"
         )
 
-        vtu_list = _vtu_files(self.work_dir)
+        vtu_list = _vtu_files(self.data_dir)
 
         # ── 各ページのウィジェット ────────────────────
 
@@ -219,6 +223,8 @@ class GNNToolkitUI:
             self.w_progress.max = self.w_epochs.value
             self.w_progress.value = 0
             self.tk = GNNToolkit(
+                data_dir=self.data_dir,
+                results_dir=self.results_dir,
                 train_load=self.w_train_load.value,
                 epochs=self.w_epochs.value,
                 hidden_dim=self.w_hidden.value,
@@ -289,7 +295,11 @@ class GNNToolkitUI:
             if not d or d == "(なし)":
                 self._set_status("読込元を選択してください", "red"); return
             if self.tk is None:
-                self.tk = GNNToolkit(train_load=self.w_train_load.value)
+                self.tk = GNNToolkit(
+                    data_dir=self.data_dir,
+                    results_dir=self.results_dir,
+                    train_load=self.w_train_load.value,
+                )
             self.tk.load(d)
             self._set_status(f"モデルを {d}/ から読み込みました", "green")
 
@@ -312,7 +322,7 @@ class GNNToolkitUI:
     # リフレッシュ
     # ==================================================================
     def _refresh_vtu_lists(self) -> None:
-        vtu_list = _vtu_files(self.work_dir)
+        vtu_list = _vtu_files(self.data_dir)
         for w in [self.w_train_file, self.w_pred_file, self.w_eval_file, self.w_analyze_file]:
             w.options = vtu_list
 
