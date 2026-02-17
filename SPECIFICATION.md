@@ -196,22 +196,44 @@ GNNToolkit(**kwargs)
 
 ```python
 {
-    "max_disp":   float,   # 最大変位 [mm]
+    "max_disp":   float,   # 最大変位（全方向）[mm]
+    "max_disp_x": float,   # 最大変位 X方向 [mm]
+    "max_disp_y": float,   # 最大変位 Y方向 [mm]
+    "max_disp_z": float,   # 最大変位 Z方向 [mm]
     "max_stress": float,   # 最大応力 [MPa]
     "output":     str,     # 出力 VTU パス
 }
 ```
 
+#### VTU 出力フィールド
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `gnn_disp` | float[N,3] | 3方向変位ベクトル [mm] |
+| `gnn_disp_x` | float[N] | X方向変位 [mm] |
+| `gnn_disp_y` | float[N] | Y方向変位 [mm] |
+| `gnn_disp_z` | float[N] | Z方向変位 [mm] |
+| `gnn_stress` | float[N] | von Mises 応力 [MPa] |
+
 #### `evaluate()` の戻り値
 
 ```python
 {
-    "d_mae": float,   # 変位 平均絶対誤差 [mm]
-    "d_max": float,   # 変位 最大誤差 [mm]
-    "d_rel": float,   # 変位 相対誤差 [%]
-    "s_mae": float,   # 応力 平均絶対誤差 [MPa]
-    "s_max": float,   # 応力 最大誤差 [MPa]
-    "s_rel": float,   # 応力 相対誤差 [%]
+    "d_mae": float,     # 変位 平均絶対誤差（全方向）[mm]
+    "d_max": float,     # 変位 最大誤差（全方向）[mm]
+    "d_rel": float,     # 変位 相対誤差（全方向）[%]
+    "d_mae_x": float,   # 変位X 平均絶対誤差 [mm]
+    "d_max_x": float,   # 変位X 最大誤差 [mm]
+    "d_rel_x": float,   # 変位X 相対誤差 [%]
+    "d_mae_y": float,   # 変位Y 平均絶対誤差 [mm]
+    "d_max_y": float,   # 変位Y 最大誤差 [mm]
+    "d_rel_y": float,   # 変位Y 相対誤差 [%]
+    "d_mae_z": float,   # 変位Z 平均絶対誤差 [mm]
+    "d_max_z": float,   # 変位Z 最大誤差 [mm]
+    "d_rel_z": float,   # 変位Z 相対誤差 [%]
+    "s_mae": float,     # 応力 平均絶対誤差 [MPa]
+    "s_max": float,     # 応力 最大誤差 [MPa]
+    "s_rel": float,     # 応力 相対誤差 [%]
 }
 ```
 
