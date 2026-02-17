@@ -27,12 +27,18 @@ from .model import StructuralGNN
 class GNNToolkit:
     """汎用構造解析 GNN のファサード。"""
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, data_dir: str = "data", results_dir: str = "results", **kwargs) -> None:
+        self.data_dir = data_dir
+        self.results_dir = results_dir
+        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self.results_dir, exist_ok=True)
         self.config = GNNConfig(**kwargs)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: Optional[StructuralGNN] = None
         self._loss_history: List[float] = []
         print(f"[GNNToolkit] device = {self.device}")
+        print(f"  data_dir    = {os.path.abspath(self.data_dir)}")
+        print(f"  results_dir = {os.path.abspath(self.results_dir)}")
 
     # ==================================================================
     # 学習
@@ -63,6 +69,8 @@ class GNNToolkit:
         """
         if isinstance(vtu_files, str):
             vtu_files = [vtu_files]
+        # data_dir からの相対パスを補完
+        vtu_files = [self._resolve_data(f) for f in vtu_files]
         if load_values is None:
             load_values = [self.config.train_load] * len(vtu_files)
         elif isinstance(load_values, (int, float)):
@@ -176,8 +184,11 @@ class GNNToolkit:
         dict  — max_disp, max_stress, output
         """
         assert self.model is not None, "先に train() を実行してください"
+        vtu_file = self._resolve_data(vtu_file)
         if output_vtu is None:
             output_vtu = f"gnn_{int(load_N)}N_result.vtu"
+        # results_dir に保存
+        output_vtu = self._resolve_results(output_vtu)
 
         data = FEADataProcessor.to_graph(
             vtu_file, load_N, self.config
@@ -217,6 +228,7 @@ class GNNToolkit:
     ) -> Dict[str, float]:
         """学習データ（正解）との誤差を算出する。"""
         assert self.model is not None, "先に train() を実行してください"
+        vtu_file = self._resolve_data(vtu_file)
         if load_N is None:
             load_N = self.config.train_load
 
@@ -284,6 +296,26 @@ class GNNToolkit:
     # ==================================================================
     # ユーティリティ
     # ==================================================================
+    # ==================================================================
+    # パス解決ヘルパー
+    # ==================================================================
+    def _resolve_data(self, path: str) -> str:
+        """ファイルが存在しなければ data_dir 配下を探す。"""
+        if os.path.isfile(path):
+            return path
+        joined = os.path.join(self.data_dir, os.path.basename(path))
+        if os.path.isfile(joined):
+            return joined
+        return path  # 見つからない場合はそのまま返す
+
+    def _resolve_results(self, path: str) -> str:
+        """出力パスを results_dir 配下に配置する。"""
+        # 既にディレクトリ指定がある場合はそのまま
+        if os.path.dirname(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            return path
+        return os.path.join(self.results_dir, path)
+
     @property
     def loss_history(self) -> List[float]:
         """直近の学習 Loss 履歴を返す。"""
