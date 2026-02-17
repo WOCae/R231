@@ -82,7 +82,11 @@ class GNNToolkitUI:
         # ── 各ページのウィジェット ────────────────────
 
         # 1) 学習
-        self.w_train_file = widgets.Dropdown(options=vtu_list, description="学習VTU:", layout=self._WIDE)
+        self.w_train_file = widgets.SelectMultiple(
+            options=vtu_list, description="学習VTU:",
+            layout=widgets.Layout(width="320px", height="100px"),
+            style={"description_width": "80px"},
+        )
         self.w_train_load = widgets.FloatText(value=1000.0, description="基準荷重[N]:", layout=self._WIDE)
         self.w_epochs = widgets.IntSlider(value=5000, min=500, max=20000, step=500,
                                           description="Epochs:", layout=self._WIDE,
@@ -226,10 +230,10 @@ class GNNToolkitUI:
     def _on_train(self, _) -> None:
         self.out.clear_output()
         with self.out:
-            vtu = self.w_train_file.value
-            if not vtu:
-                self._set_status("VTU ファイルを選択してください", "red"); return
-            self._set_status("学習中…", "blue")
+            selected = list(self.w_train_file.value)
+            if not selected:
+                self._set_status("VTU ファイルを選択してください（Ctrl+クリックで複数選択）", "red"); return
+            self._set_status(f"学習中…（{len(selected)}ファイル）", "blue")
             self.w_progress.layout.visibility = "visible"
             self.w_progress.max = self.w_epochs.value
             self.w_progress.value = 0
@@ -248,9 +252,10 @@ class GNNToolkitUI:
             )
             def _cb(epoch, loss, best, lr):
                 self.w_progress.value = min(epoch, self.w_progress.max)
-            self.tk.train(vtu, callback=_cb)
+            vtu_files = selected if len(selected) > 1 else selected[0]
+            self.tk.train(vtu_files, callback=_cb)
             self.w_progress.value = self.w_progress.max
-            self._set_status("学習完了 ✓", "green")
+            self._set_status(f"学習完了 ✓（{len(selected)}ファイル）", "green")
 
     def _on_predict(self, _) -> None:
         self.out.clear_output()
