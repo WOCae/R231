@@ -249,8 +249,11 @@ class GNNToolkitUI:
             res = self.tk.predict(self.w_pred_file.value, self.w_pred_load.value,
                                   self.w_pred_output.value.strip() or None)
             self._set_status(
-                f"推論完了 — 最大変位 {res['max_disp']:.5f} mm / "
-                f"最大応力 {res['max_stress']:.3f} MPa", "green")
+                f"推論完了 — "
+                f"X:{res['max_disp_x']:.4f} / "
+                f"Y:{res['max_disp_y']:.4f} / "
+                f"Z:{res['max_disp_z']:.4f} mm  |  "
+                f"応力 {res['max_stress']:.3f} MPa", "green")
             self._refresh_vtu_lists()
 
     def _on_evaluate(self, _) -> None:
@@ -261,7 +264,10 @@ class GNNToolkitUI:
             self._set_status("評価中…", "blue")
             res = self.tk.evaluate(self.w_eval_file.value, self.w_eval_load.value)
             self._set_status(
-                f"評価完了 — 変位誤差 {res['d_rel']:.2f}% / "
+                f"評価完了 — "
+                f"変位誤差 X:{res.get('d_rel_x',0):.2f}% "
+                f"Y:{res.get('d_rel_y',0):.2f}% "
+                f"Z:{res.get('d_rel_z',0):.2f}%  |  "
                 f"応力誤差 {res['s_rel']:.2f}%", "green")
 
     def _on_plot_loss(self, _) -> None:
