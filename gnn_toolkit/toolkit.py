@@ -12,6 +12,10 @@ GNNToolkit — 学習・推論・保存・評価を統合するファサード�
     tk = GNNToolkit(train_load=1000.0, include_geometry=True)
     tk.train(["mesh_A.vtu", "mesh_B.vtu"], load_values=[1000, 500])
     tk.predict("mesh_C.vtu", load_N=750.0)  # 未知形状にも推論可能
+
+    # CalculiX .inp ファイルから推論（拘束・荷重を明示定義）
+    tk.predict("FEMMeshNetgen.inp")             # 荷重は CLOAD から自動取得
+    tk.predict("FEMMeshNetgen.inp", load_N=2000) # 荷重を変更して推論
 """
 
 from __future__ import annotations
@@ -197,20 +201,40 @@ class GNNToolkit:
     # ==================================================================
     def predict(
         self,
-        vtu_file: str,
-        load_N: float,
+        mesh_file: str,
+        load_N: Optional[float] = None,
         output_vtu: Optional[str] = None,
     ) -> Dict[str, float]:
         """
         学習済みモデルで推論し VTU に保存する。
-        未知メッシュ形状にも対応（include_geometry=True 時）。
+
+        VTU または CalculiX .inp ファイルを入力として受け取る。
+        .inp ファイルの場合は拘束・荷重条件をファイルから直接読み取る。
+
+        Parameters
+        ----------
+        mesh_file : str
+            VTU ファイルまたは CalculiX .inp ファイルのパス
+        load_N : float, optional
+            荷重値 [N]。VTU の場合は省略時 train_load,
+            .inp の場合は省略時 CLOAD から自動計算
+        output_vtu : str, optional
+            出力 VTU ファイル名（省略時は自動生成）
 
         Returns
         -------
         dict  — max_disp, max_disp_x/y/z, max_stress, output
         """
         assert self.model is not None, "先に train() または load() を実行してください"
-        vtu_file = self._resolve_data(vtu_file)
+
+        # .inp ファイルの場合は専用処理
+        if mesh_file.lower().endswith(".inp"):
+            return self._predict_from_inp(mesh_file, load_N, output_vtu)
+
+        # --- VTU ファイル処理 ---
+        vtu_file = self._resolve_data(mesh_file)
+        if load_N is None:
+            load_N = self.config.train_load
         if output_vtu is None:
             output_vtu = f"gnn_{int(load_N)}N_result.vtu"
         output_vtu = self._resolve_results(output_vtu)
@@ -247,6 +271,70 @@ class GNNToolkit:
             "output": output_vtu,
         }
         print(f"\n--- [{load_N}N 推論結果] ---")
+        print(f"  最大変位   : {res['max_disp']:.5f} mm")
+        print(f"    X        : {max_dx:.5f} mm")
+        print(f"    Y        : {max_dy:.5f} mm")
+        print(f"    Z        : {max_dz:.5f} mm")
+        print(f"  最大応力   : {res['max_stress']:.5f} MPa")
+        print(f"  保存先     : {output_vtu}")
+        return res
+
+    # ==================================================================
+    # .inp 推論
+    # ==================================================================
+    def _predict_from_inp(
+        self,
+        inp_file: str,
+        load_N: Optional[float] = None,
+        output_vtu: Optional[str] = None,
+    ) -> Dict[str, float]:
+        """CalculiX .inp ファイルから推論する。"""
+        inp_file = self._resolve_data(inp_file)
+
+        data, reader = FEADataProcessor.to_graph_from_inp(
+            inp_file, load_N, self.config
+        )
+
+        # load_N が None の場合はファイルから取得済み
+        if load_N is None:
+            load_N = reader.get_total_load()
+
+        if output_vtu is None:
+            output_vtu = f"gnn_{int(load_N)}N_result.vtu"
+        output_vtu = self._resolve_results(output_vtu)
+
+        print(f"\n--- [.inp ファイル解析] ---")
+        print(reader.summary())
+
+        data = data.to(self.device)
+        self.model.eval()
+        with torch.no_grad():
+            pred = self.model(data).cpu().numpy()
+
+        # PyVista メッシュ構築 & 結果保存
+        mesh = reader.to_pyvista()
+        disp_mm = pred[:, :3] * self.config.norm_disp
+        stress_mpa = pred[:, 3] * self.config.norm_stress
+
+        mesh.point_data["gnn_disp"] = disp_mm
+        mesh.point_data["gnn_disp_x"] = disp_mm[:, 0]
+        mesh.point_data["gnn_disp_y"] = disp_mm[:, 1]
+        mesh.point_data["gnn_disp_z"] = disp_mm[:, 2]
+        mesh.point_data["gnn_stress"] = stress_mpa
+        mesh.save(output_vtu)
+
+        max_dx = float(np.max(np.abs(disp_mm[:, 0])))
+        max_dy = float(np.max(np.abs(disp_mm[:, 1])))
+        max_dz = float(np.max(np.abs(disp_mm[:, 2])))
+        res = {
+            "max_disp": float(np.max(np.abs(disp_mm))),
+            "max_disp_x": max_dx,
+            "max_disp_y": max_dy,
+            "max_disp_z": max_dz,
+            "max_stress": float(np.max(stress_mpa)),
+            "output": output_vtu,
+        }
+        print(f"\n--- [{load_N}N 推論結果 (from .inp)] ---")
         print(f"  最大変位   : {res['max_disp']:.5f} mm")
         print(f"    X        : {max_dx:.5f} mm")
         print(f"    Y        : {max_dy:.5f} mm")

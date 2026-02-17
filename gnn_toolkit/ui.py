@@ -30,6 +30,13 @@ def _vtu_files(directory: str = ".") -> list:
     return sorted(glob.glob(os.path.join(directory, "*.vtu")))
 
 
+def _mesh_files(directory: str = ".") -> list:
+    """VTU + INP ファイル一覧。"""
+    files = sorted(glob.glob(os.path.join(directory, "*.vtu")))
+    files += sorted(glob.glob(os.path.join(directory, "*.inp")))
+    return files
+
+
 def _model_dirs(directory: str = ".") -> list:
     dirs = []
     for d in sorted(os.listdir(directory)):
@@ -114,7 +121,7 @@ class GNNToolkitUI:
         ])
 
         # 2) 推論
-        self.w_pred_file = widgets.Dropdown(options=vtu_list, description="元VTU:", layout=self._WIDE)
+        self.w_pred_file = widgets.Dropdown(options=_mesh_files(self.data_dir), description="メッシュ:", layout=self._WIDE)
         self.w_pred_load = widgets.FloatText(value=500.0, description="荷重[N]:", layout=self._WIDE)
         self.w_pred_output = widgets.Text(value="", description="出力名:",
                                           placeholder="(自動)", layout=self._WIDE)
@@ -152,9 +159,9 @@ class GNNToolkitUI:
             widgets.HBox([self.w_load_dir, self.btn_load, self.btn_refresh]),
         ])
 
-        # 5) VTU解析
-        self.w_analyze_file = widgets.Dropdown(options=vtu_list, description="VTU:", layout=self._WIDE)
-        self.btn_analyze = widgets.Button(description="🔍 VTU解析", layout=self._BTN)
+        # 5) メッシュ解析
+        self.w_analyze_file = widgets.Dropdown(options=_mesh_files(self.data_dir), description="ファイル:", layout=self._WIDE)
+        self.btn_analyze = widgets.Button(description="🔍 解析", layout=self._BTN)
         self.btn_analyze.on_click(self._on_analyze)
         page_analyze = widgets.VBox([self.w_analyze_file, self.btn_analyze])
 
@@ -322,20 +329,29 @@ class GNNToolkitUI:
     def _on_analyze(self, _) -> None:
         self.out.clear_output()
         with self.out:
-            vtu = self.w_analyze_file.value
-            if not vtu:
-                self._set_status("VTU ファイルを選択してください", "red"); return
-            from .data import FEADataProcessor
-            FEADataProcessor.analyze(vtu)
-            self._set_status(f"{vtu} の解析完了", "green")
+            f = self.w_analyze_file.value
+            if not f:
+                self._set_status("ファイルを選択してください", "red"); return
+            if f.lower().endswith(".inp"):
+                from .inp_reader import InpFileReader
+                reader = InpFileReader().read(f)
+                print(f"=== {os.path.basename(f)} (CalculiX .inp) ===")
+                print(reader.summary())
+            else:
+                from .data import FEADataProcessor
+                FEADataProcessor.analyze(f)
+            self._set_status(f"{os.path.basename(f)} の解析完了", "green")
 
     # ==================================================================
     # リフレッシュ
     # ==================================================================
     def _refresh_vtu_lists(self) -> None:
         vtu_list = _vtu_files(self.data_dir)
-        for w in [self.w_train_file, self.w_pred_file, self.w_eval_file, self.w_analyze_file]:
-            w.options = vtu_list
+        mesh_list = _mesh_files(self.data_dir)
+        self.w_train_file.options = vtu_list
+        self.w_eval_file.options = vtu_list
+        self.w_pred_file.options = mesh_list
+        self.w_analyze_file.options = mesh_list
 
     def _refresh_model_dirs(self) -> None:
         dirs = _model_dirs(self.work_dir)

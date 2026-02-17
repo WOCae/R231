@@ -235,6 +235,70 @@ class FEADataProcessor:
         return Data(x=x, edge_index=ei, y=torch.tensor(y, dtype=torch.float))
 
     # ------------------------------------------------------------------
+    # INP → PyG Data
+    # ------------------------------------------------------------------
+    @staticmethod
+    def to_graph_from_inp(
+        inp_path: str,
+        load_N: Optional[float],
+        config: GNNConfig,
+    ) -> tuple:
+        """
+        CalculiX .inp ファイルから PyG Data を構築する。
+
+        Parameters
+        ----------
+        inp_path : str
+            CalculiX .inp ファイルパス
+        load_N : float, optional
+            荷重値 [N]。None の場合はファイル内 CLOAD から自動計算
+        config : GNNConfig
+            設定
+
+        Returns
+        -------
+        (Data, InpFileReader)
+            PyG Data と読み取り済みリーダー
+        """
+        from .inp_reader import InpFileReader
+
+        reader = InpFileReader().read(inp_path)
+        pos = reader.get_positions()
+
+        if load_N is None:
+            load_N = reader.get_total_load()
+
+        # エッジ（双方向）
+        edges = reader.get_edges()
+        ei = torch.tensor(edges, dtype=torch.long).t().contiguous()
+        ei = torch.cat([ei, ei.flip(0)], dim=1)
+
+        # 拘束・荷重マスク（.inp で明示定義）
+        is_fixed = reader.get_fixed_mask()
+        is_load = reader.get_load_mask()
+
+        # 特徴量構築
+        if config.include_geometry:
+            geo = FEADataProcessor.compute_geometry_features(pos, ei)
+            load_ratio = is_load * (load_N / config.train_load)
+            x = torch.tensor(
+                np.column_stack([geo, is_fixed, is_load, load_ratio]),
+                dtype=torch.float,
+            )
+        else:
+            pos_norm = pos / config.norm_coord
+            load_feat = is_load * (load_N / config.train_load)
+            x = torch.tensor(
+                np.column_stack([pos_norm, is_fixed, load_feat]),
+                dtype=torch.float,
+            )
+
+        # ラベルなし（推論専用）
+        y = torch.zeros((len(pos), config.n_outputs), dtype=torch.float)
+
+        return Data(x=x, edge_index=ei, y=y), reader
+
+    # ------------------------------------------------------------------
     # VTU ファイル一覧取得
     # ------------------------------------------------------------------
     @staticmethod

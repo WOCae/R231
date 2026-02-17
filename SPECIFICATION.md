@@ -33,6 +33,7 @@ R231/
 │   ├── __init__.py         # パッケージエントリポイント
 │   ├── config.py           # GNNConfig — 設定・自動キャリブレーション
 │   ├── data.py             # FEADataProcessor — VTU解析・グラフ変換
+│   ├── inp_reader.py       # InpFileReader — CalculiX .inp パーサー
 │   ├── model.py            # StructuralGNN — GNNモデル定義
 │   ├── toolkit.py          # GNNToolkit — ファサード（学習・推論・評価・保存）
 │   └── ui.py               # GNNToolkitUI — ipywidgets GUI
@@ -154,7 +155,45 @@ ELSE:
 
 ---
 
-### 3.3 StructuralGNN（model.py）
+### 3.3 InpFileReader（inp_reader.py）
+
+CalculiX .inp ファイルを解析し、メッシュ・境界条件・荷重情報を取得するパーサー。
+推論時に `.inp` を指定することで、拘束・荷重を明示的に伝えられる。
+
+#### 対応キーワード
+
+| キーワード | 説明 |
+|---|---|
+| `*NODE` | ノード座標 (ID, x, y, z) |
+| `*ELEMENT` | 要素接続 (C3D4, C3D10, C3D8) |
+| `*NSET` | ノード集合（通常 / GENERATE） |
+| `*BOUNDARY` | 拘束条件（NSET名 または ノードID） |
+| `*CLOAD` | 集中荷重（NSET名 または ノードID） |
+
+#### 対応要素タイプ
+
+| 要素 | 節点数 | VTK タイプ | エッジ数/要素 |
+|---|---|---|---|
+| C3D4 | 4 | TETRA (10) | 6 |
+| C3D10 | 10 | QUADRATIC_TETRA (24) | 12 |
+| C3D8 | 8 | HEXAHEDRON (12) | 12 |
+
+#### メソッド
+
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `read(path)` | self | .inp ファイルを解析 |
+| `get_positions()` | ndarray(N,3) | ノード座標 |
+| `get_edges()` | ndarray(E,2) | エッジペア（0-based） |
+| `get_fixed_mask()` | ndarray(N) | 拘束マスク (0/1) |
+| `get_load_mask()` | ndarray(N) | 荷重マスク (0/1) |
+| `get_total_load()` | float | CLOAD 合力ノルム [N] |
+| `to_pyvista()` | UnstructuredGrid | PyVista メッシュ構築 |
+| `summary()` | str | 解析サマリー |
+
+---
+
+### 3.4 StructuralGNN（model.py）
 
 グラフニューラルネットワーク本体。Encoder–Processor–Decoder アーキテクチャ。
 
@@ -187,7 +226,7 @@ ELSE:
 
 ---
 
-### 3.4 GNNToolkit（toolkit.py）
+### 3.5 GNNToolkit（toolkit.py）
 
 学習・推論・評価・保存/読込を統合するファサードクラス。
 
@@ -203,7 +242,7 @@ GNNToolkit(**kwargs)
 | メソッド | 引数 | 戻り値 | 説明 |
 |---|---|---|---|
 | `train` | `vtu_files`, `load_values?`, `callback?` | list[float] | GNN モデルを学習。Loss 履歴を返す |
-| `predict` | `vtu_file`, `load_N`, `output_vtu?` | dict | 推論結果を VTU に保存 |
+| `predict` | `mesh_file`, `load_N?`, `output_vtu?` | dict | 推論結果を VTU に保存（VTU / .inp 両対応） |
 | `evaluate` | `vtu_file`, `load_N?` | dict | 正解との誤差を算出 |
 | `save` | `directory: str` | None | モデルと設定を保存 |
 | `load` | `directory: str` | None | 保存済みモデルを読込 |
@@ -269,7 +308,7 @@ GNNToolkit(**kwargs)
 
 ---
 
-### 3.5 GNNToolkitUI（ui.py）
+### 3.6 GNNToolkitUI（ui.py）
 
 ipywidgets ベースの対話型 GUI。5つのタブで全操作をカバーする。
 
@@ -356,7 +395,15 @@ tk.train(
 tk.predict("mesh_C.vtu", load_N=750.0)
 ```
 
-### 4.6 保存済みモデルの再利用
+### 4.6 CalculiX .inp ファイルから推論
+
+```python
+# 拘束・荷重を .inp から明示的に読み取り
+tk.predict("FEMMeshNetgen.inp")              # 荷重は CLOAD から自動計算
+tk.predict("FEMMeshNetgen.inp", load_N=2000) # 荷重を変更して推論
+```
+
+### 4.7 保存済みモデルの再利用
 
 ```python
 tk = GNNToolkit()
@@ -406,8 +453,9 @@ $$
 
 | 項目 | 形式 | 説明 |
 |---|---|---|
-| メッシュ | `.vtu` (VTK Unstructured Grid) | FEA 解析結果 |
-| 荷重値 | float | 推論したい荷重条件 [N] |
+| 学習データ | `.vtu` (VTK Unstructured Grid) | FEA 解析結果（変位・応力含む） |
+| 推論入力 | `.vtu` または `.inp` (CalculiX) | メッシュ形状と境界条件 |
+| 荷重値 | float | 推論したい荷重条件 [N]（.inp は自動取得可） |
 
 ### 出力
 
