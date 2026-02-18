@@ -219,9 +219,9 @@ class GNNToolkitUI:
     # ページ切替
     # ==================================================================
     def _show_page(self, name: str) -> None:
-        self._page_area.clear_output(wait=True)
-        with self._page_area:
-            display(self._pages[name])
+        idx = self._page_names.index(name)
+        for i, pw in enumerate(self._page_widgets):
+            pw.layout.display = "" if i == idx else "none"
 
     def _on_nav(self, change) -> None:
         self._show_page(change["new"])
