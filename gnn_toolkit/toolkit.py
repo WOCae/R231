@@ -76,8 +76,7 @@ class GNNToolkit:
         load_directions : list[ndarray(3,)], optional
             各ファイルの荷重方向単位ベクトル。None の場合は変位から自動検出。
         callback : callable, optional
-            ``callback(epoch, loss, best_loss, lr)`` — epoch ごとに呼ばれる。
-            False を返すと学習を途中停止する。
+            ``callback(epoch, loss, best_loss, lr)`` — epoch ごとに呼ばれる
 
         Returns
         -------
@@ -186,13 +185,7 @@ class GNNToolkit:
             lr_now = optimizer.param_groups[0]["lr"]
 
             if callback:
-                ret = callback(epoch, total_loss, best_loss, lr_now)
-                if ret is False:
-                    print(
-                        f"  >>> 手動停止 @ epoch {epoch} "
-                        f"| Loss {total_loss:.6f} | Best {best_loss:.6f}"
-                    )
-                    break
+                callback(epoch, total_loss, best_loss, lr_now)
 
             if epoch % 500 == 0:
                 print(
