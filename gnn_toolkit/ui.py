@@ -109,6 +109,11 @@ class GNNToolkitUI:
                                            description="ジオメトリ特徴量（形状汎化）")
         self.btn_train = widgets.Button(description="▶ 学習開始", button_style="primary", layout=self._BTN)
         self.btn_train.on_click(self._on_train)
+        self.btn_stop = widgets.Button(description="⏹ 途中停止", button_style="danger",
+                                        layout=self._BTN)
+        self.btn_stop.on_click(self._on_stop)
+        self.btn_stop.layout.visibility = "hidden"
+        self._stop_requested = False
         self.w_progress = widgets.IntProgress(value=0, min=0, max=100, description="進捗:",
                                                bar_style="info",
                                                layout=widgets.Layout(width="100%"))
@@ -120,7 +125,7 @@ class GNNToolkitUI:
                 widgets.VBox([self.w_layers, self.w_stress_wt, self.w_patience, self.w_lr,
                              self.w_linear, self.w_geometry]),
             ]),
-            self.btn_train,
+            widgets.HBox([self.btn_train, self.btn_stop]),
             self.w_progress,
         ])
 
@@ -234,13 +239,21 @@ class GNNToolkitUI:
     # ==================================================================
     # コールバック
     # ==================================================================
+    def _on_stop(self, _) -> None:
+        """停止ボタン押下時に停止フラグを立てる。"""
+        self._stop_requested = True
+        self._set_status("停止要求中… 現在のエポック完了後に停止します", "orange")
+
     def _on_train(self, _) -> None:
         self.out.clear_output()
         with self.out:
             selected = list(self.w_train_file.value)
             if not selected:
                 self._set_status("VTU ファイルを選択してください（Ctrl+クリックで複数選択）", "red"); return
+            self._stop_requested = False
             self._set_status(f"学習中…（{len(selected)}ファイル）", "blue")
+            self.btn_stop.layout.visibility = "visible"
+            self.btn_train.disabled = True
             self.w_progress.layout.visibility = "visible"
             self.w_progress.max = self.w_epochs.value
             self.w_progress.value = 0
@@ -259,10 +272,17 @@ class GNNToolkitUI:
             )
             def _cb(epoch, loss, best, lr):
                 self.w_progress.value = min(epoch, self.w_progress.max)
+                if self._stop_requested:
+                    return False
             vtu_files = selected if len(selected) > 1 else selected[0]
             self.tk.train(vtu_files, callback=_cb)
             self.w_progress.value = self.w_progress.max
-            self._set_status(f"学習完了 ✓（{len(selected)}ファイル）", "green")
+            self.btn_stop.layout.visibility = "hidden"
+            self.btn_train.disabled = False
+            if self._stop_requested:
+                self._set_status(f"学習を途中停止しました（{len(selected)}ファイル）", "orange")
+            else:
+                self._set_status(f"学習完了 ✓（{len(selected)}ファイル）", "green")
 
     def _on_predict(self, _) -> None:
         self.out.clear_output()
