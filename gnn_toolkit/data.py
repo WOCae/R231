@@ -105,6 +105,93 @@ class FEADataProcessor:
         return is_fixed, is_load
 
     # ------------------------------------------------------------------
+    # 境界条件パターンの検出・保存・再適用
+    # ------------------------------------------------------------------
+    @staticmethod
+    def detect_bc_pattern(
+        mesh: pv.UnstructuredGrid,
+        disp_data: np.ndarray,
+    ) -> dict:
+        """
+        変位データから境界条件パターン（拘束面・荷重面の軸と側）を検出する。
+
+        Returns
+        -------
+        dict  — bc_fixed_axis, bc_fixed_side, bc_load_axis, bc_load_side
+        """
+        pos = mesh.points
+        mag = np.linalg.norm(disp_data, axis=1) if disp_data.ndim > 1 else np.abs(disp_data)
+        threshold = np.max(mag) * 1e-6
+
+        # 拘束面: 変位≈ 0 のノードが集中する軸・側を特定
+        fixed_mask = mag <= threshold
+        fixed_pos = pos[fixed_mask]
+        ranges = pos.max(axis=0) - pos.min(axis=0)
+
+        bc_fixed_axis, bc_fixed_side = 0, "min"
+        if len(fixed_pos) > 0:
+            for ax in range(3):
+                if ranges[ax] < 1e-10:
+                    continue
+                tol = ranges[ax] * 0.02
+                at_min = np.sum(np.abs(fixed_pos[:, ax] - pos[:, ax].min()) < tol)
+                at_max = np.sum(np.abs(fixed_pos[:, ax] - pos[:, ax].max()) < tol)
+                if at_min > len(fixed_pos) * 0.5:
+                    bc_fixed_axis, bc_fixed_side = ax, "min"
+                    break
+                if at_max > len(fixed_pos) * 0.5:
+                    bc_fixed_axis, bc_fixed_side = ax, "max"
+                    break
+
+        # 荷重面: 変位最大ノードが属する面
+        max_idx = int(np.argmax(mag))
+        bc_load_axis, bc_load_side = 0, "max"
+        for ax in range(3):
+            if ranges[ax] < 1e-10:
+                continue
+            tol = ranges[ax] * 0.01
+            if abs(pos[max_idx, ax] - pos[:, ax].max()) < tol:
+                bc_load_axis, bc_load_side = ax, "max"
+                break
+            if abs(pos[max_idx, ax] - pos[:, ax].min()) < tol:
+                bc_load_axis, bc_load_side = ax, "min"
+                break
+
+        return {
+            "bc_fixed_axis": bc_fixed_axis,
+            "bc_fixed_side": bc_fixed_side,
+            "bc_load_axis": bc_load_axis,
+            "bc_load_side": bc_load_side,
+        }
+
+    @staticmethod
+    def apply_bc_pattern(
+        pos: np.ndarray,
+        config: "GNNConfig",
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        保存済みのBCパターンを任意のメッシュ座標に適用する。
+
+        学習時に検出した「どの軸のどの側が拘束/荷重」を、
+        推論対象メッシュの座標に再適用する。
+        """
+        n = pos.shape[0]
+        ranges = pos.max(axis=0) - pos.min(axis=0)
+
+        def _face_mask(axis: int, side: str) -> np.ndarray:
+            if ranges[axis] < 1e-10:
+                return np.zeros(n, dtype=float)
+            tol = ranges[axis] * 0.01
+            if side == "min":
+                return (pos[:, axis] <= pos[:, axis].min() + tol).astype(float)
+            else:
+                return (pos[:, axis] >= pos[:, axis].max() - tol).astype(float)
+
+        is_fixed = _face_mask(config.bc_fixed_axis, config.bc_fixed_side)
+        is_load = _face_mask(config.bc_load_axis, config.bc_load_side)
+        return is_fixed, is_load
+
+    # ------------------------------------------------------------------
     # ジオメトリ特徴量の計算
     # ------------------------------------------------------------------
     @staticmethod
@@ -224,6 +311,7 @@ class FEADataProcessor:
         load_N: float,
         config: GNNConfig,
         load_direction: Optional[np.ndarray] = None,
+        predict_mode: bool = False,
     ) -> Data:
         """
         VTU ファイルを PyTorch Geometric の Data オブジェクトに変換する。
@@ -232,29 +320,38 @@ class FEADataProcessor:
         ----------
         load_direction : ndarray (3,), optional
             荷重方向の単位ベクトル。None の場合は変位から自動検出。
+        predict_mode : bool
+            True の場合、VTUのFEA結果を無視し、configに保存済みの
+            BCパターンを適用する。推論時に使用。
         """
         mesh = pv.read(vtu_path)
         mesh = mesh.cell_data_to_point_data()
         pos = mesh.points
 
-        # ラベル
-        y = np.zeros((pos.shape[0], config.n_outputs))
-        disp_data = None
-        if config.disp_key and config.disp_key in mesh.point_data:
-            disp_data = mesh.point_data[config.disp_key]
-            y[:, :3] = (disp_data * config.to_mm) / config.norm_disp
-        if config.stress_key and config.stress_key in mesh.point_data:
-            s = mesh.point_data[config.stress_key]
-            if s.ndim > 1:
-                s = np.linalg.norm(s, axis=1)
-            y[:, 3] = (s * config.to_mpa) / config.norm_stress
+        if predict_mode and config.bc_fixed_axis is not None:
+            # --- 推論モード: FEA結果を使わず、保存済みBCパターンを適用 ---
+            y = np.zeros((pos.shape[0], config.n_outputs))
+            is_fixed, is_load = FEADataProcessor.apply_bc_pattern(pos, config)
+            if load_direction is None and config.bc_load_direction is not None:
+                load_direction = np.array(config.bc_load_direction)
+            elif load_direction is None:
+                load_direction = FEADataProcessor.detect_load_direction(mesh, None)
+        else:
+            # --- 学習モード: FEA結果からBCを検出 ---
+            y = np.zeros((pos.shape[0], config.n_outputs))
+            disp_data = None
+            if config.disp_key and config.disp_key in mesh.point_data:
+                disp_data = mesh.point_data[config.disp_key]
+                y[:, :3] = (disp_data * config.to_mm) / config.norm_disp
+            if config.stress_key and config.stress_key in mesh.point_data:
+                s = mesh.point_data[config.stress_key]
+                if s.ndim > 1:
+                    s = np.linalg.norm(s, axis=1)
+                y[:, 3] = (s * config.to_mpa) / config.norm_stress
 
-        # 境界条件
-        is_fixed, is_load = FEADataProcessor.detect_bc(mesh, disp_data)
-
-        # 荷重方向の自動検出
-        if load_direction is None:
-            load_direction = FEADataProcessor.detect_load_direction(mesh, disp_data)
+            is_fixed, is_load = FEADataProcessor.detect_bc(mesh, disp_data)
+            if load_direction is None:
+                load_direction = FEADataProcessor.detect_load_direction(mesh, disp_data)
 
         # エッジ（双方向）
         edges = mesh.extract_all_edges().lines.reshape(-1, 3)[:, 1:]

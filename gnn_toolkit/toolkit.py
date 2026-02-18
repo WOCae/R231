@@ -105,6 +105,23 @@ class GNNToolkit:
         else:
             self.config.auto_calibrate_multi(meshes, load_values)
         self.config.update_n_features()
+
+        # BCパターンの検出・保存（先頭ファイルから）
+        ref_mesh = meshes[0]
+        disp_data = None
+        if self.config.disp_key and self.config.disp_key in ref_mesh.point_data:
+            disp_data = ref_mesh.point_data[self.config.disp_key]
+        if disp_data is not None:
+            bc = FEADataProcessor.detect_bc_pattern(ref_mesh, disp_data)
+            self.config.bc_fixed_axis = bc["bc_fixed_axis"]
+            self.config.bc_fixed_side = bc["bc_fixed_side"]
+            self.config.bc_load_axis = bc["bc_load_axis"]
+            self.config.bc_load_side = bc["bc_load_side"]
+            ld = FEADataProcessor.detect_load_direction(ref_mesh, disp_data)
+            self.config.bc_load_direction = ld.tolist()
+            print(f"  BCパターン保存: 拘束={bc['bc_fixed_axis']}-{bc['bc_fixed_side']}, "
+                  f"荷重={bc['bc_load_axis']}-{bc['bc_load_side']}, 方向={ld}")
+
         print(self.config.summary())
 
         # Step 2 — モデル構築
@@ -255,7 +272,9 @@ class GNNToolkit:
         output_vtu = self._resolve_results(output_vtu)
 
         data = FEADataProcessor.to_graph(
-            vtu_file, load_N, self.config
+            vtu_file, load_N, self.config,
+            load_direction=load_direction,
+            predict_mode=True,
         ).to(self.device)
 
         self.model.eval()
@@ -374,7 +393,8 @@ class GNNToolkit:
             load_N = self.config.train_load
 
         data = FEADataProcessor.to_graph(
-            vtu_file, load_N, self.config
+            vtu_file, load_N, self.config,
+            predict_mode=False,
         ).to(self.device)
 
         self.model.eval()

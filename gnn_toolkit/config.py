@@ -54,7 +54,12 @@ class GNNConfig:
     # ── データキー（None = 自動検出）──────────────────────
     disp_key: Optional[str] = None
     stress_key: Optional[str] = None
-
+    # ── 境界条件パターン（学習時に検出・保存、推論時に再適用）──
+    bc_fixed_axis: Optional[int] = None       # 拘束面の軸 (0=X, 1=Y, 2=Z)
+    bc_fixed_side: Optional[str] = None       # "min" or "max"
+    bc_load_axis: Optional[int] = None        # 荷重面の軸
+    bc_load_side: Optional[str] = None        # "min" or "max"
+    bc_load_direction: Optional[List[float]] = None  # 荷重方向単位ベクトル [dx, dy, dz]
     # ------------------------------------------------------------------
     # 自動キャリブレーション
     # ------------------------------------------------------------------
@@ -155,11 +160,18 @@ class GNNConfig:
     # ------------------------------------------------------------------
     def summary(self) -> str:
         mode = f"ジオメトリ{self.n_features}次元" if self.include_geometry else f"レガシー{self.n_features}次元"
+        axis_lbl = {0: "X", 1: "Y", 2: "Z"}
+        bc_info = "未検出"
+        if self.bc_fixed_axis is not None:
+            bc_info = (f"拘束={axis_lbl.get(self.bc_fixed_axis,'?')}-{self.bc_fixed_side}, "
+                       f"荷重={axis_lbl.get(self.bc_load_axis,'?')}-{self.bc_load_side}, "
+                       f"方向={self.bc_load_direction}")
         lines = [
             f"  座標正規化  : {self.norm_coord}",
             f"  変位キー    : {self.disp_key}  (正規化 = {self.norm_disp} mm)",
             f"  応力キー    : {self.stress_key}  (正規化 = {self.norm_stress} MPa)",
             f"  基準荷重    : {self.train_load} N",
+            f"  境界条件  : {bc_info}",
             f"  入力特徴量  : {mode} (n_features={self.n_features})",
             f"  モデル      : {self.n_layers}層 × hidden={self.hidden_dim}",
             f"  学習        : epochs={self.epochs}, lr={self.lr}, "
