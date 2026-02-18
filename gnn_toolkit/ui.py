@@ -182,25 +182,21 @@ class GNNToolkitUI:
         page_analyze = widgets.VBox([self.w_analyze_file, self.btn_analyze])
 
         # ── ページ切替（ToggleButtons + Output）────────
-        self._pages = {
-            "学習": page_train,
-            "推論": page_predict,
-            "評価": page_eval,
-            "保存/読込": page_save,
-            "VTU解析": page_analyze,
-        }
+        # ── ページ切替（ToggleButtons + 表示/非表示切替）────
+        self._page_names = ["学習", "推論", "評価", "保存/読込", "VTU解析"]
+        self._page_widgets = [page_train, page_predict, page_eval, page_save, page_analyze]
         self.w_nav = widgets.ToggleButtons(
-            options=list(self._pages.keys()),
+            options=self._page_names,
             description="",
             button_style="info",
             style={"button_width": "100px"},
         )
         self.w_nav.observe(self._on_nav, names="value")
 
-        self._page_area = widgets.Output(
-            layout=widgets.Layout(min_height="320px")
-        )
-        self._show_page(self.w_nav.value)
+        # 全ページを VBox に格納し、初期は先頭ページ以外を非表示
+        for i, pw in enumerate(self._page_widgets):
+            pw.layout.display = "" if i == 0 else "none"
+        self._page_area = widgets.VBox(self._page_widgets)
 
         # ── ステータス & ログ ──────────────────────────
         self.w_status = widgets.HTML("<i style='color:#888;'>待機中</i>")
