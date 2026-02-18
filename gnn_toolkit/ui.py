@@ -18,7 +18,7 @@ import matplotlib
 matplotlib.use("agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from IPython.display import display
+from IPython.display import display, Image as IPyImage
 
 from .toolkit import GNNToolkit
 
@@ -307,8 +307,12 @@ class GNNToolkitUI:
             ax.set_xlabel("Epoch"); ax.set_ylabel("Total Loss")
             ax.set_title("Training Loss"); ax.grid(True, alpha=0.3)
             fig.tight_layout()
-            display(fig)
+            import io
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
             plt.close(fig)
+            buf.seek(0)
+            display(IPyImage(data=buf.read()))
             self._set_status("Loss 曲線を表示しました", "green")
 
     def _on_save(self, _) -> None:
