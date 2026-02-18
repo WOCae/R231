@@ -197,7 +197,9 @@ class GNNToolkitUI:
         )
         self.w_nav.observe(self._on_nav, names="value")
 
-        self._page_area = widgets.Output()
+        self._page_area = widgets.Output(
+            layout=widgets.Layout(min_height="320px")
+        )
         self._show_page(self.w_nav.value)
 
         # ── ステータス & ログ ──────────────────────────
