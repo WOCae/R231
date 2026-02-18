@@ -305,8 +305,10 @@ class GNNToolkitUI:
             fig, ax = plt.subplots(figsize=(8, 3))
             ax.semilogy(self.tk.loss_history)
             ax.set_xlabel("Epoch"); ax.set_ylabel("Total Loss")
-            ax.set_title("学習 Loss 曲線"); ax.grid(True, alpha=0.3)
-            plt.tight_layout(); plt.show()
+            ax.set_title("Training Loss"); ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            display(fig)
+            plt.close(fig)
             self._set_status("Loss 曲線を表示しました", "green")
 
     def _on_save(self, _) -> None:
