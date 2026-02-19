@@ -20,6 +20,23 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import display, Image as IPyImage
 
+# --- CJK フォント設定（Colab 等で日本語グリフ警告を抑制） ---
+def _setup_cjk_font():
+    """matplotlib で日本語を含むテキストを描画する際のフォント設定"""
+    import matplotlib.font_manager as fm
+    # Colab/Linux: Noto Sans CJK が利用可能な場合に設定
+    for font_name in ["Noto Sans CJK JP", "Noto Sans CJK", "IPAGothic",
+                       "IPAPGothic", "TakaoPGothic", "MS Gothic", "Yu Gothic"]:
+        if any(font_name.lower() in f.name.lower() for f in fm.fontManager.ttflist):
+            plt.rcParams["font.family"] = font_name
+            return
+    # フォールバック: sans-serif に CJK フォント候補を追加
+    plt.rcParams["font.sans-serif"] = [
+        "Noto Sans CJK JP", "IPAGothic", "MS Gothic", "Yu Gothic",
+    ] + plt.rcParams.get("font.sans-serif", [])
+
+_setup_cjk_font()
+
 from .toolkit import GNNToolkit
 
 
