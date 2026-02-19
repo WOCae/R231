@@ -393,7 +393,7 @@ class GNNToolkitUI:
     @staticmethod
     def _parse_load_direction(label: str):
         """Dropdown のラベルを ndarray(3,) に変換。'自動検出' は None を返す。"""
-        import numpy as np
+
         _MAP = {
             "+X": np.array([1.0, 0.0, 0.0]),
             "-X": np.array([-1.0, 0.0, 0.0]),

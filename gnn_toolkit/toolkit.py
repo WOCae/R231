@@ -155,10 +155,7 @@ class GNNToolkit:
         self._loss_history = []
 
         # 荷重ベクトル列インデックス (Fx, Fy, Fz)
-        if self.config.include_geometry:
-            load_cols = [11, 12, 13]  # geo(9) + is_fixed(1) + is_load(1) → 11,12,13
-        else:
-            load_cols = [5, 6, 7]     # pos(3) + is_fixed(1) + is_load(1) → 5,6,7
+        load_cols = self.config.load_cols
 
         print(
             f"\n[Step 3] 学習開始 "
@@ -283,35 +280,8 @@ class GNNToolkit:
 
         mesh = pv.read(vtu_file)
         mesh = mesh.cell_data_to_point_data()
-        disp_mm = pred[:, :3] * self.config.norm_disp
-        stress_mpa = pred[:, 3] * self.config.norm_stress
 
-        mesh.point_data["gnn_disp"] = disp_mm
-        mesh.point_data["gnn_disp_x"] = disp_mm[:, 0]
-        mesh.point_data["gnn_disp_y"] = disp_mm[:, 1]
-        mesh.point_data["gnn_disp_z"] = disp_mm[:, 2]
-        mesh.point_data["gnn_stress"] = stress_mpa
-        mesh.save(output_vtu)
-
-        max_dx = float(np.max(np.abs(disp_mm[:, 0])))
-        max_dy = float(np.max(np.abs(disp_mm[:, 1])))
-        max_dz = float(np.max(np.abs(disp_mm[:, 2])))
-        res = {
-            "max_disp": float(np.max(np.abs(disp_mm))),
-            "max_disp_x": max_dx,
-            "max_disp_y": max_dy,
-            "max_disp_z": max_dz,
-            "max_stress": float(np.max(stress_mpa)),
-            "output": output_vtu,
-        }
-        print(f"\n--- [{load_N}N 推論結果] ---")
-        print(f"  最大変位   : {res['max_disp']:.5f} mm")
-        print(f"    X        : {max_dx:.5f} mm")
-        print(f"    Y        : {max_dy:.5f} mm")
-        print(f"    Z        : {max_dz:.5f} mm")
-        print(f"  最大応力   : {res['max_stress']:.5f} MPa")
-        print(f"  保存先     : {output_vtu}")
-        return res
+        return self._save_prediction(mesh, pred, load_N, output_vtu)
 
     # ==================================================================
     # .inp 推論
@@ -346,8 +316,21 @@ class GNNToolkit:
         with torch.no_grad():
             pred = self.model(data).cpu().numpy()
 
-        # PyVista メッシュ構築 & 結果保存
         mesh = reader.to_pyvista()
+        return self._save_prediction(mesh, pred, load_N, output_vtu, source="from .inp")
+
+    # ==================================================================
+    # 推論結果保存（共通）
+    # ==================================================================
+    def _save_prediction(
+        self,
+        mesh: pv.UnstructuredGrid,
+        pred: np.ndarray,
+        load_N: float,
+        output_vtu: str,
+        source: str = "",
+    ) -> Dict[str, float]:
+        """推論結果を VTU に保存し、サマリーを表示する。"""
         disp_mm = pred[:, :3] * self.config.norm_disp
         stress_mpa = pred[:, 3] * self.config.norm_stress
 
@@ -369,7 +352,8 @@ class GNNToolkit:
             "max_stress": float(np.max(stress_mpa)),
             "output": output_vtu,
         }
-        print(f"\n--- [{load_N}N 推論結果 (from .inp)] ---")
+        suffix = f" ({source})" if source else ""
+        print(f"\n--- [{load_N}N 推論結果{suffix}] ---")
         print(f"  最大変位   : {res['max_disp']:.5f} mm")
         print(f"    X        : {max_dx:.5f} mm")
         print(f"    Y        : {max_dy:.5f} mm")

@@ -39,7 +39,7 @@ class StructuralGNN(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
         h = config.hidden_dim
-        self._include_geometry = config.include_geometry
+        self._load_cols = config.load_cols
 
         # Encoder
         self.encoder = nn.Sequential(
@@ -71,12 +71,8 @@ class StructuralGNN(nn.Module):
         x, ei = data.x, data.edge_index
 
         # 荷重ベクトル (Fx, Fy, Fz) の取得
-        if self._include_geometry:
-            # ジオメトリモード: x[:,11]=Fx, x[:,12]=Fy, x[:,13]=Fz
-            load_vec = data.x[:, 11:14]  # (N, 3)
-        else:
-            # レガシーモード: x[:,5]=Fx, x[:,6]=Fy, x[:,7]=Fz
-            load_vec = data.x[:, 5:8]    # (N, 3)
+        start = self._load_cols[0]
+        load_vec = data.x[:, start:start + 3]  # (N, 3)
 
         # スケーリング用のスカラー比率 = 荷重ベクトルのノルム最大値
         load_mag = torch.norm(load_vec, dim=1)  # (N,)

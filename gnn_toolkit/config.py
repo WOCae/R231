@@ -124,6 +124,14 @@ class GNNConfig:
         """include_geometry に応じて n_features を設定する。"""
         self.n_features = 14 if self.include_geometry else 8
 
+    @property
+    def load_cols(self) -> List[int]:
+        """Fx, Fy, Fz の列インデックスを返す。"""
+        # ジオメトリ: geo(9) + is_fixed(1) + is_load(1) → 11,12,13
+        # レガシー:   pos(3) + is_fixed(1) + is_load(1) →  5,6,7
+        base = 11 if self.include_geometry else 5
+        return [base, base + 1, base + 2]
+
     # ------------------------------------------------------------------
     # キー探索
     # ------------------------------------------------------------------

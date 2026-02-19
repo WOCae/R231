@@ -8,7 +8,6 @@ v3.1: 荷重方向ベクトル化で引張・曲げ等の複数荷重方向に�
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -219,56 +218,62 @@ class FEADataProcessor:
 
         # 正規化座標 (bbox → [0, 1])
         bbox_min = pos.min(axis=0)
-        bbox_max = pos.max(axis=0)
-        bbox_range = bbox_max - bbox_min
+        bbox_range = pos.max(axis=0) - bbox_min
         bbox_range[bbox_range < 1e-12] = 1.0
         norm_coords = (pos - bbox_min) / bbox_range
 
-        # 隣接情報構築
+        # ベクトル化された隣接情報計算
         src = edge_index[0].numpy()
         dst = edge_index[1].numpy()
 
-        neighbors = defaultdict(list)
-        for s, d in zip(src, dst):
-            neighbors[int(s)].append(int(d))
+        # 次数 (各ノードの隣接数)
+        degree = np.bincount(src, minlength=n).astype(np.float32)
 
-        degree = np.zeros(n, dtype=np.float32)
+        # エッジ長 (各エッジの距離)
+        diff_all = pos[dst] - pos[src]  # (E, 3)
+        dists_all = np.linalg.norm(diff_all, axis=1)  # (E,)
+
+        # ノードごとの平均エッジ長・標準偏差・擬似法線をベクトル化
         edge_len_mean = np.zeros(n, dtype=np.float32)
         edge_len_std = np.zeros(n, dtype=np.float32)
         pseudo_normal = np.zeros((n, 3), dtype=np.float32)
 
-        for i in range(n):
-            nbrs = neighbors[i]
-            deg = len(nbrs)
-            degree[i] = deg
-            if deg == 0:
-                continue
-            nbr_pts = pos[nbrs]
-            diff = nbr_pts - pos[i]
-            dists = np.linalg.norm(diff, axis=1)
-            edge_len_mean[i] = dists.mean()
-            edge_len_std[i] = dists.std() if deg > 1 else 0.0
-            mean_dir = diff.mean(axis=0)
-            norm = np.linalg.norm(mean_dir)
-            if norm > 1e-12:
-                pseudo_normal[i] = mean_dir / norm
+        # scatter: ノードごとの合計
+        edge_len_sum = np.bincount(src, weights=dists_all, minlength=n)
+        mask = degree > 0
+        edge_len_mean[mask] = (edge_len_sum[mask] / degree[mask]).astype(np.float32)
 
-        # 正規化
-        max_deg = degree.max() if degree.max() > 0 else 1.0
-        degree_norm = degree / max_deg
+        # 方向ベクトルの合計 → 擬似法線
+        for ax in range(3):
+            pseudo_normal[:, ax] = np.bincount(
+                src, weights=diff_all[:, ax], minlength=n
+            ).astype(np.float32)
+        pseudo_normal[mask] /= degree[mask, None]
+        norms = np.linalg.norm(pseudo_normal, axis=1, keepdims=True)
+        norms[norms < 1e-12] = 1.0
+        pseudo_normal /= norms
 
-        max_el = edge_len_mean.max() if edge_len_mean.max() > 0 else 1.0
-        edge_len_mean_norm = edge_len_mean / max_el
+        # 標準偏差（scatter で二乗平均 - 平均二乗）
+        sq_sum = np.bincount(src, weights=dists_all ** 2, minlength=n)
+        multi_mask = degree > 1
+        variance = np.zeros(n, dtype=np.float32)
+        variance[multi_mask] = (
+            sq_sum[multi_mask] / degree[multi_mask] - edge_len_mean[multi_mask] ** 2
+        )
+        variance = np.maximum(variance, 0.0)  # 数値誤差対策
+        edge_len_std[multi_mask] = np.sqrt(variance[multi_mask])
 
-        max_es = edge_len_std.max() if edge_len_std.max() > 0 else 1.0
-        edge_len_std_norm = edge_len_std / max_es
+        # 正規化 (最大値で割る、ゼロ除算防止)
+        def _safe_normalize(arr: np.ndarray) -> np.ndarray:
+            m = arr.max()
+            return arr / m if m > 0 else arr
 
         return np.column_stack([
-            norm_coords,                   # 3
-            degree_norm[:, None],          # 1
-            edge_len_mean_norm[:, None],   # 1
-            edge_len_std_norm[:, None],    # 1
-            pseudo_normal,                 # 3
+            norm_coords,                              # 3
+            _safe_normalize(degree)[:, None],          # 1
+            _safe_normalize(edge_len_mean)[:, None],   # 1
+            _safe_normalize(edge_len_std)[:, None],    # 1
+            pseudo_normal,                             # 3
         ]).astype(np.float32)
 
     # ------------------------------------------------------------------
@@ -359,30 +364,9 @@ class FEADataProcessor:
         ei = torch.cat([ei, ei.flip(0)], dim=1)
 
         # 特徴量構築
-        if config.include_geometry:
-            # ジオメトリ14次元: geo(9) + is_fixed(1) + is_load(1) + Fx(1) + Fy(1) + Fz(1)
-            geo = FEADataProcessor.compute_geometry_features(pos, ei)
-            load_ratio = load_N / config.train_load
-            # 荷重ノードにのみ方向付き荷重ベクトルを設定
-            fx = is_load * load_direction[0] * load_ratio
-            fy = is_load * load_direction[1] * load_ratio
-            fz = is_load * load_direction[2] * load_ratio
-            x = torch.tensor(
-                np.column_stack([geo, is_fixed, is_load, fx, fy, fz]),
-                dtype=torch.float,
-            )
-        else:
-            # レガシー8次元: pos_norm(3) + is_fixed(1) + is_load(1) + Fx(1) + Fy(1) + Fz(1)
-            pos_norm = pos / config.norm_coord
-            load_ratio = load_N / config.train_load
-            fx = is_load * load_direction[0] * load_ratio
-            fy = is_load * load_direction[1] * load_ratio
-            fz = is_load * load_direction[2] * load_ratio
-            x = torch.tensor(
-                np.column_stack([pos_norm, is_fixed, is_load, fx, fy, fz]),
-                dtype=torch.float,
-            )
-
+        x = FEADataProcessor._build_features(
+            pos, ei, is_fixed, is_load, load_N, load_direction, config
+        )
         return Data(x=x, edge_index=ei, y=torch.tensor(y, dtype=torch.float))
 
     # ------------------------------------------------------------------
@@ -436,31 +420,45 @@ class FEADataProcessor:
             load_direction = reader.get_load_direction()
 
         # 特徴量構築
-        if config.include_geometry:
-            geo = FEADataProcessor.compute_geometry_features(pos, ei)
-            load_ratio = load_N / config.train_load
-            fx = is_load * load_direction[0] * load_ratio
-            fy = is_load * load_direction[1] * load_ratio
-            fz = is_load * load_direction[2] * load_ratio
-            x = torch.tensor(
-                np.column_stack([geo, is_fixed, is_load, fx, fy, fz]),
-                dtype=torch.float,
-            )
-        else:
-            pos_norm = pos / config.norm_coord
-            load_ratio = load_N / config.train_load
-            fx = is_load * load_direction[0] * load_ratio
-            fy = is_load * load_direction[1] * load_ratio
-            fz = is_load * load_direction[2] * load_ratio
-            x = torch.tensor(
-                np.column_stack([pos_norm, is_fixed, is_load, fx, fy, fz]),
-                dtype=torch.float,
-            )
-
-        # ラベルなし（推論専用）
+        x = FEADataProcessor._build_features(
+            pos, ei, is_fixed, is_load, load_N, load_direction, config
+        )
         y = torch.zeros((len(pos), config.n_outputs), dtype=torch.float)
 
         return Data(x=x, edge_index=ei, y=y), reader
+
+    # ------------------------------------------------------------------
+    # 特徴量構築（共通）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _build_features(
+        pos: np.ndarray,
+        edge_index: torch.Tensor,
+        is_fixed: np.ndarray,
+        is_load: np.ndarray,
+        load_N: float,
+        load_direction: np.ndarray,
+        config: GNNConfig,
+    ) -> torch.Tensor:
+        """
+        ノード座標・BC マスクから入力特徴量テンソルを構築する。
+
+        include_geometry=True の場合はジオメトリ 14 次元、
+        False の場合はレガシー 8 次元を返す。
+        """
+        load_ratio = load_N / config.train_load
+        fx = is_load * load_direction[0] * load_ratio
+        fy = is_load * load_direction[1] * load_ratio
+        fz = is_load * load_direction[2] * load_ratio
+
+        if config.include_geometry:
+            geo = FEADataProcessor.compute_geometry_features(pos, edge_index)
+            cols = [geo, is_fixed, is_load, fx, fy, fz]
+        else:
+            pos_norm = pos / config.norm_coord
+            cols = [pos_norm, is_fixed, is_load, fx, fy, fz]
+
+        return torch.tensor(np.column_stack(cols), dtype=torch.float)
 
     # ------------------------------------------------------------------
     # VTU ファイル一覧取得
