@@ -259,6 +259,8 @@ class GNNToolkitUI:
                 self._set_status("VTU ファイルを選択してください（Ctrl+クリックで複数選択）", "red"); return
             self._set_status(f"学習中…（{len(selected)}ファイル）", "blue")
             self.w_progress.layout.visibility = "visible"
+            self.w_progress.bar_style = "info"
+            self.w_progress.description = "進捗:"
             self.w_progress.max = self.w_epochs.value
             self.w_progress.value = 0
             self.tk = GNNToolkit(
@@ -279,7 +281,12 @@ class GNNToolkitUI:
             vtu_files = selected if len(selected) > 1 else selected[0]
             self.tk.train(vtu_files, callback=_cb)
             self.w_progress.value = self.w_progress.max
-            self._set_status(f"学習完了 ✓（{len(selected)}ファイル）", "green")
+            self.w_progress.bar_style = "success"
+            self.w_progress.description = "完了!"
+            best = min(self.tk.loss_history) if self.tk.loss_history else 0
+            self._set_status(
+                f"学習完了 ✓（{len(selected)}ファイル, "
+                f"Best Loss: {best:.6f}）", "green")
 
     def _on_predict(self, _) -> None:
         self.out.clear_output()
