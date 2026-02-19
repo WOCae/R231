@@ -54,6 +54,21 @@ def _mesh_files(directory: str = ".") -> list:
     return files
 
 
+def _extract_load_from_filename(filepath: str) -> Optional[float]:
+    """ファイル名から荷重値[N]を推定する。例: bend_10x10_2000N.vtu → 2000.0"""
+    import re
+    basename = os.path.splitext(os.path.basename(filepath))[0]
+    # パターン: 数値 + N（末尾 or アンダースコア前）
+    m = re.search(r'(\d+(?:\.\d+)?)\s*[Nn](?:_|$)', basename)
+    if m:
+        return float(m.group(1))
+    # パターン: _数値 が末尾にある場合（例: result_1000）
+    m = re.search(r'_(\d+(?:\.\d+)?)$', basename)
+    if m:
+        return float(m.group(1))
+    return None
+
+
 def _model_dirs(directory: str = ".") -> list:
     dirs = []
     for d in sorted(os.listdir(directory)):
@@ -143,7 +158,9 @@ class GNNToolkitUI:
 
         # 2) 推論
         self.w_pred_file = widgets.Dropdown(options=_mesh_files(self.data_dir), description="メッシュ:", layout=self._WIDE)
-        self.w_pred_load = widgets.FloatText(value=500.0, description="荷重[N]:", layout=self._WIDE)
+        self.w_pred_file.observe(self._on_pred_file_change, names="value")
+        init_pred_load = _extract_load_from_filename(self.w_pred_file.value or "") or 500.0
+        self.w_pred_load = widgets.FloatText(value=init_pred_load, description="荷重[N]:", layout=self._WIDE)
         self.w_pred_dir = widgets.Dropdown(
             options=["自動検出", "+X", "-X", "+Y", "-Y", "+Z", "-Z"],
             value="自動検出",
@@ -159,7 +176,9 @@ class GNNToolkitUI:
 
         # 3) 評価
         self.w_eval_file = widgets.Dropdown(options=vtu_list, description="VTU:", layout=self._WIDE)
-        self.w_eval_load = widgets.FloatText(value=1000.0, description="荷重[N]:", layout=self._WIDE)
+        self.w_eval_file.observe(self._on_eval_file_change, names="value")
+        init_eval_load = _extract_load_from_filename(self.w_eval_file.value or "") or 1000.0
+        self.w_eval_load = widgets.FloatText(value=init_eval_load, description="荷重[N]:", layout=self._WIDE)
         self.btn_evaluate = widgets.Button(description="📊 精度評価", button_style="info", layout=self._BTN)
         self.btn_evaluate.on_click(self._on_evaluate)
         self.btn_plot_loss = widgets.Button(description="📈 Loss曲線", layout=self._BTN)
@@ -314,12 +333,13 @@ class GNNToolkitUI:
                 self._set_status("先にモデルを学習または読込してください", "red"); return
             self._set_status("評価中…", "blue")
             res = self.tk.evaluate(self.w_eval_file.value, self.w_eval_load.value)
+            r2d = res.get('r2_disp', 0)
+            r2s = res.get('r2_stress', 0)
             self._set_status(
                 f"評価完了 — "
-                f"変位誤差 X:{res.get('d_rel_x',0):.2f}% "
-                f"Y:{res.get('d_rel_y',0):.2f}% "
-                f"Z:{res.get('d_rel_z',0):.2f}%  |  "
-                f"応力誤差 {res['s_rel']:.2f}%", "green")
+                f"変位誤差 {res['d_rel']:.2f}%  |  "
+                f"応力誤差 {res['s_rel']:.2f}%  |  "
+                f"R² 変位={r2d:.4f} 応力={r2s:.4f}", "green")
 
     def _on_plot_loss(self, _) -> None:
         self.out.clear_output()
@@ -403,6 +423,19 @@ class GNNToolkitUI:
             "-Z": np.array([0.0, 0.0, -1.0]),
         }
         return _MAP.get(label, None)
+
+    # ==================================================================
+    # ファイル選択時の荷重自動検出
+    # ==================================================================
+    def _on_eval_file_change(self, change) -> None:
+        load = _extract_load_from_filename(change["new"] or "")
+        if load is not None:
+            self.w_eval_load.value = load
+
+    def _on_pred_file_change(self, change) -> None:
+        load = _extract_load_from_filename(change["new"] or "")
+        if load is not None:
+            self.w_pred_load.value = load
 
     # ==================================================================
     # リフレッシュ

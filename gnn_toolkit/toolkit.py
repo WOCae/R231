@@ -370,12 +370,19 @@ class GNNToolkit:
         vtu_file: str,
         load_N: Optional[float] = None,
     ) -> Dict[str, float]:
-        """学習データ（正解）との誤差を算出する。"""
+        """
+        学習データ（FEA正解）との誤差を算出する。
+
+        学習時と同じ特徴量構築パスを使い、GNN 推論値と FEA 正解値を比較。
+        相対誤差は「全方向の最大変位」を基準に算出するため、
+        変位が小さい方向でも過大評価にならない。
+        """
         assert self.model is not None, "先に train() または load() を実行してください"
         vtu_file = self._resolve_data(vtu_file)
         if load_N is None:
             load_N = self.config.train_load
 
+        # 学習時と同じ方法でグラフ構築（predict_mode=False）
         data = FEADataProcessor.to_graph(
             vtu_file, load_N, self.config,
             predict_mode=False,
@@ -391,33 +398,51 @@ class GNNToolkit:
         sp = pred[:, 3] * self.config.norm_stress
         st = true[:, 3] * self.config.norm_stress
 
-        # 全体指標
+        # --- 全体指標 ---
         d_mae = float(np.mean(np.abs(dp - dt)))
         d_max = float(np.max(np.abs(dp - dt)))
         s_mae = float(np.mean(np.abs(sp - st)))
         s_max = float(np.max(np.abs(sp - st)))
-        d_rel = d_max / max(np.max(np.abs(dt)), 1e-12) * 100
-        s_rel = s_max / max(np.max(np.abs(st)), 1e-12) * 100
 
-        # 各方向指標
+        # 全方向の最大変位を共通基準とする（方向別の過大な相対誤差を防止）
+        d_ref_global = max(float(np.max(np.abs(dt))), 1e-12)
+        s_ref = max(float(np.max(np.abs(st))), 1e-12)
+        d_rel = d_max / d_ref_global * 100
+        s_rel = s_max / s_ref * 100
+
+        # --- R² スコア（決定係数）---
+        def _r2(y_true, y_pred):
+            ss_res = np.sum((y_true - y_pred) ** 2)
+            ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+            return 1.0 - ss_res / max(ss_tot, 1e-12)
+
+        r2_disp = float(_r2(dt.ravel(), dp.ravel()))
+        r2_stress = float(_r2(st, sp))
+
+        # --- 各方向指標 ---
         axis_labels = ["X", "Y", "Z"]
         axis_results = {}
         for i, ax in enumerate(axis_labels):
             ax_mae = float(np.mean(np.abs(dp[:, i] - dt[:, i])))
             ax_max = float(np.max(np.abs(dp[:, i] - dt[:, i])))
-            ax_ref = max(float(np.max(np.abs(dt[:, i]))), 1e-12)
-            ax_rel = ax_max / ax_ref * 100
+            # 方向別相対誤差も全体基準で算出
+            ax_rel = ax_max / d_ref_global * 100
+            ax_ref_own = float(np.max(np.abs(dt[:, i])))
             axis_results[f"d_mae_{ax.lower()}"] = ax_mae
             axis_results[f"d_max_{ax.lower()}"] = ax_max
             axis_results[f"d_rel_{ax.lower()}"] = ax_rel
+            axis_results[f"d_ref_{ax.lower()}"] = ax_ref_own
 
         print(f"\n--- [精度評価 {load_N}N] ---")
+        print(f"  基準最大変位: {d_ref_global:.6f} mm  |  基準最大応力: {s_ref:.4f} MPa")
         for ax in axis_labels:
             k = ax.lower()
+            ref = axis_results[f"d_ref_{k}"]
             print(
                 f"  変位{ax} MAE = {axis_results[f'd_mae_{k}']:.6f} mm  |  "
                 f"最大誤差 = {axis_results[f'd_max_{k}']:.6f} mm  "
-                f"({axis_results[f'd_rel_{k}']:.2f}%)"
+                f"({axis_results[f'd_rel_{k}']:.2f}%)  "
+                f"[参考値 {ref:.6f} mm]"
             )
         print(
             f"  変位  MAE = {d_mae:.6f} mm  |  "
@@ -427,9 +452,11 @@ class GNNToolkit:
             f"  応力  MAE = {s_mae:.4f} MPa  |  "
             f"最大誤差 = {s_max:.4f} MPa  ({s_rel:.2f}%)"
         )
+        print(f"  R² 変位 = {r2_disp:.6f}  |  R² 応力 = {r2_stress:.6f}")
         return {
             "d_mae": d_mae, "d_max": d_max, "d_rel": float(d_rel),
             "s_mae": s_mae, "s_max": s_max, "s_rel": float(s_rel),
+            "r2_disp": r2_disp, "r2_stress": r2_stress,
             **axis_results,
         }
 
